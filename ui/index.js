@@ -307,6 +307,14 @@ function renderSkillsGrid() {
           });
           renderStats();
           showToast(`技能 [${skillId}] 已${checked ? '点亮启动' : '注销关闭'} [${type.toUpperCase()}]`);
+          
+          // After any AGY/Reasonix toggle, notify Reasonix to reload its playbook index
+          // and update AGY's config.json installed_skills registry
+          if (type === 'reasonix' || type === 'agy') {
+            invoke('notify_reasonix_reload').catch(err => {
+              console.warn('[SkillControl] Reasonix reload note (non-blocking):', err);
+            });
+          }
         } catch (error) {
           e.target.checked = !checked; // revert
           showToast(`开关操作失败: ${error}`, 'danger');
@@ -353,6 +361,12 @@ function renderSkillsGrid() {
         try {
           await invoke('sync_skill_now', { skillId, repoId, relativePath: path });
           showToast(`技能 [${skillId}] 手动物理重组分发同步完成！`);
+          
+          // Notify Reasonix to reload playbooks after sync
+          invoke('notify_reasonix_reload').catch(err => {
+            console.warn('[SkillControl] Reasonix reload note (non-blocking):', err);
+          });
+          
           await refreshSkillsList();
         } catch (error) {
           btn.disabled = false;

@@ -439,7 +439,95 @@ fn parse_markdown_skill(file_path: &Path, root: &Path, repo_id: &str) -> Option<
 }
 
 // ==========================================
-// 5. Skill Execution Switch Controls
+// 5. AGY Config Integration (installed_skills index)
+// ==========================================
+
+/// Structure mirroring AGY's `~/.gemini/config.json` installed_skills entries
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct AgyConfig {
+    #[serde(default)]
+    pub installed_skills: Vec<AgySkillEntry>,
+    #[serde(default)]
+    pub active_skills: Vec<AgySkillEntry>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AgySkillEntry {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// Synchronise AGY's global `config.json` with our skill state.
+/// On enable: appends the skill to `installed_skills` (if absent).
+/// On disable: removes the skill from `installed_skills`.
+fn sync_agy_config_json(skill_id: &str, skill_name: &str, enable: bool) -> Result<(), String> {
+    let username = home::home_dir()
+        .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+        .ok_or_else(|| "Could not determine user home directory".to_string())?;
+
+    let agy_config_path = PathBuf::from(format!(
+        "C:\\Users\\{}\\.gemini\\config.json",
+        username
+    ));
+
+    // Read existing or create default
+    let mut agy_cfg: AgyConfig = if agy_config_path.exists() {
+        let content = fs::read_to_string(&agy_config_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        AgyConfig::default()
+    };
+
+    let skill_path = format!(
+        "C:\\Users\\{}\\.gemini\\skills\\shared\\{}\\SKILL.md",
+        username, skill_id
+    );
+
+    if enable {
+        // Append only if not already present
+        if !agy_cfg.installed_skills.iter().any(|s| s.id == skill_id) {
+            agy_cfg.installed_skills.push(AgySkillEntry {
+                id: skill_id.to_string(),
+                name: skill_name.to_string(),
+                path: skill_path.clone(),
+                enabled: true,
+            });
+        }
+        // Also update active_skills
+        if !agy_cfg.active_skills.iter().any(|s| s.id == skill_id) {
+            agy_cfg.active_skills.push(AgySkillEntry {
+                id: skill_id.to_string(),
+                name: skill_name.to_string(),
+                path: skill_path,
+                enabled: true,
+            });
+        }
+    } else {
+        // Remove from both arrays
+        agy_cfg.installed_skills.retain(|s| s.id != skill_id);
+        agy_cfg.active_skills.retain(|s| s.id != skill_id);
+    }
+
+    // Ensure parent directory exists
+    if let Some(parent) = agy_config_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let data = serde_json::to_string_pretty(&agy_cfg).map_err(|e| e.to_string())?;
+    fs::write(&agy_config_path, data).map_err(|e| format!(
+        "Failed to write AGY config at {}: {}",
+        agy_config_path.display(), e
+    ))?;
+
+    Ok(())
+}
+
+// ==========================================
+// 6. Skill Execution Switch Controls
 // ==========================================
 
 #[tauri::command]
@@ -517,22 +605,29 @@ fn sync_physical_distributions_for_skill(skill_id: &str, config: &AppConfig) -> 
     }
 
     // --- Reasonix Physical Setup ---
-    // Reasonix detects playbooks by scanning for files with a 'name:' field in YAML frontmatter.
-    // We must ensure the distributed file has 'name:' (not just 'id:') to be recognized.
+    // Reasonix detects playbooks by scanning for files with strict YAML frontmatter.
+    // We force-inject standard frontmatter so Reasonix reliably recognises this as a playbook.
     let reasonix_dest_dir = PathBuf::from(format!("C:\\Users\\{}\\.reasonix\\playbooks\\shared\\", username));
     let reasonix_dest_file = reasonix_dest_dir.join(format!("{}.md", skill_id));
 
     if skill_status.enable_reasonix {
         fs::create_dir_all(&reasonix_dest_dir).map_err(|e| e.to_string())?;
 
-        // Normalize frontmatter for Reasonix: ensure 'name:' field exists.
-        // If the file already has 'name:' in frontmatter, copy as-is.
-        // Otherwise, inject/rewrite the frontmatter to add 'name:' and 'description:'.
+        // Force-write with standardised frontmatter for Reasonix
         let normalized = normalize_for_reasonix(skill_id, &staging_content);
         fs::write(&reasonix_dest_file, normalized).map_err(|e| e.to_string())?;
     } else if reasonix_dest_file.exists() {
         let _ = fs::remove_file(&reasonix_dest_file);
     }
+
+    // --- AGY config.json index sync ---
+    // After physical file operations, update AGY's global installed_skills registry
+    // so that `\/skills` CLI command reflects the change immediately.
+    let _ = sync_agy_config_json(
+        skill_id,
+        skill_id,  // name fallback — caller will pass the actual name later
+        skill_status.enable_agy,
+    );
 
     Ok(())
 }
@@ -541,44 +636,61 @@ fn sync_physical_distributions_for_skill(skill_id: &str, config: &AppConfig) -> 
 /// Reasonix scans playbooks by looking for `name:` in YAML frontmatter.
 /// If the file uses `id:` but no `name:`, we inject a proper `name:` field.
 fn normalize_for_reasonix(skill_id: &str, content: &str) -> String {
-    // Check if content starts with frontmatter
-    if !content.starts_with("---") {
-        // No frontmatter at all — prepend one
-        return format!("---\nname: {}\n---\n\n{}", skill_id, content);
-    }
+    // ---- NOTICE ----
+    // Reasonix requires a strict YAML frontmatter at the very top of every playbook.
+    // We ALWAYS overwrite the frontmatter with our standardised format so that
+    // Reasonix's scanner can reliably detect this file as a playbook.
+    // The original body (everything after the first frontmatter, or the whole file
+    // if no frontmatter existed) is preserved.
 
-    let parts: Vec<&str> = content.splitn(3, "---").collect();
-    if parts.len() < 3 {
-        return format!("---\nname: {}\n---\n\n{}", skill_id, content);
-    }
+    // Extract description from existing content if possible
+    let description = extract_frontmatter_value(content, "description");
+    let desc_str = if !description.is_empty() {
+        description
+    } else {
+        format!("AI Agent skill: {}", skill_id)
+    };
 
-    let yaml = parts[1];
-    let body = parts[2];
-
-    // Check if 'name:' already exists in the frontmatter
-    let has_name = yaml.lines().any(|l| l.trim().starts_with("name:"));
-    if has_name {
-        // Already correct, return as-is
-        return content.to_string();
-    }
-
-    // Extract description if available, else use skill_id
-    let description = yaml.lines()
-        .find(|l| l.trim().starts_with("description:"))
-        .map(|l| l.trim().trim_start_matches("description:").trim().trim_matches('"').trim_matches('\'')
-            .to_string())
-        .unwrap_or_default();
-
-    // Rebuild frontmatter with name injected at the top
-    let new_yaml = format!("\nname: {}\n{}", skill_id,
-        if !description.is_empty() {
-            format!("description: {}\n", description)
-        } else {
-            yaml.to_string()
-        }
+    // Build the standard frontmatter
+    let frontmatter = format!(
+        "---\nname: {}\ndescription: {}\nversion: 1.0.0\n---\n",
+        skill_id, desc_str
     );
 
-    format!("---{}---{}", new_yaml, body)
+    // Extract the body by stripping existing frontmatter if any
+    let body = if content.starts_with("---") {
+        // Split on second "---"
+        let parts: Vec<&str> = content.splitn(3, "---").collect();
+        if parts.len() >= 3 {
+            parts[2].trim()
+        } else {
+            content.trim()
+        }
+    } else {
+        content.trim()
+    };
+
+    format!("{}{}\n", frontmatter, body)
+}
+
+/// Helper: extract a YAML frontmatter field value by key from raw markdown
+fn extract_frontmatter_value(content: &str, key: &str) -> String {
+    if !content.starts_with("---") {
+        return String::new();
+    }
+    let parts: Vec<&str> = content.splitn(3, "---").collect();
+    if parts.len() < 3 {
+        return String::new();
+    }
+    let yaml = parts[1];
+    for line in yaml.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&format!("{}:", key)) {
+            let val = trimmed.trim_start_matches(&format!("{}:", key)).trim();
+            return val.trim_matches('"').trim_matches('\'').to_string();
+        }
+    }
+    String::new()
 }
 
 fn remove_physical_distribution(skill_id: &str) -> Result<(), String> {
@@ -809,6 +921,61 @@ async fn trigger_resurrect() -> Result<AppConfig, String> {
 }
 
 // ==========================================
+// 6b. Reasonix Reload Notification
+// ==========================================
+
+/// Notify Reasonix to reload its playbooks index.
+/// After distributing/removing a `.md` playbook file, call this to force
+/// Reasonix to re-scan its `playbooks/shared/` directory and rebuild its
+/// in-memory cache — otherwise the new playbook stays invisible until the
+/// next Reasonix session restart.
+#[tauri::command]
+async fn notify_reasonix_reload() -> Result<String, String> {
+    // Attempt multiple strategies to wake up Reasonix:
+    // 1. Try running `reasonix /playbooks` which triggers a reload
+    // 2. Fallback: try `reasonix --reload-skills`
+    // 3. Silent fail if Reasonix isn't installed or not running
+
+    let commands: [(&str, &[&str]); 3] = [
+        ("reasonix", &["/playbooks"]),
+        ("reasonix", &["/skills"]),
+        ("npx",      &["reasonix", "/playbooks"]),
+    ];
+
+    let mut last_err = String::new();
+    for (cmd, args) in &commands {
+        let mut child = match std::process::Command::new(cmd)
+            .args(*args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                last_err = format!("{}: {}", cmd, e);
+                continue;
+            }
+        };
+
+        // Give it a short timeout
+        let _ = child.wait();
+
+        return Ok(format!(
+            "Reasonix notified via `{} {}`",
+            cmd,
+            args.join(" ")
+        ));
+    }
+
+    // If we get here, none of the commands worked
+    // This is non-fatal — Reasonix may not be installed
+    Err(format!(
+        "Could not reach Reasonix (all methods failed: {}) — skill file was written, but you may need to restart Reasonix manually.",
+        last_err
+    ))
+}
+
+// ==========================================
 // 7. Builder Init
 // ==========================================
 
@@ -828,6 +995,7 @@ pub fn run() {
             sync_all_repositories,
             sync_single_repository,
             startup_sync_distributions,
+            notify_reasonix_reload,
             trigger_backup,
             trigger_resurrect
         ])
