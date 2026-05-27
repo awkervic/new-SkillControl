@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>new-SkillControl - AI 智能体技能管理器</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="index.css">
+</head>
+<body>
+
+  <!-- Background decorative glows -->
+  <div class="bg-glow bg-glow-1"></div>
+  <div class="bg-glow bg-glow-2"></div>
+
+  <div class="app-container">
+    
+    <!-- 1. Sidebar -->
+    <aside class="sidebar">
+      <div class="logo-area">
+        <div class="logo-icon">⚡</div>
+        <div class="logo-text">
+          <h1>new-SkillControl</h1>
+          <span>AI 智能体技能管理器</span>
+        </div>
+      </div>
+
+      <div class="nav-section">
+        <h3 class="nav-title">技能仓库</h3>
+        <ul class="repo-list" id="repo-list">
+          <!-- Dynamically populated -->
+        </ul>
+      </div>
+
+      <div class="sidebar-footer">
+        <button id="btn-add-repo" class="btn btn-secondary">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          添加自定义仓库
+        </button>
+        <button id="btn-settings" class="btn btn-icon-text">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 00-2 2v.18a2 2 0 01-1 1.73l-.43.25a2 2 0 01-2 0l-.15-.08a2 2 0 00-2.73.73l-.22.38a2 2 0 00.73 2.73l.15.1a2 2 0 011 1.72v.51a2 2 0 01-1 1.74l-.15.09a2 2 0 00-.73 2.73l.22.38a2 2 0 002.73.73l.15-.08a2 2 0 012 0l.43.25a2 2 0 011 1.73V20a2 2 0 002 2h.44a2 2 0 002-2v-.18a2 2 0 011-1.73l.43-.25a2 2 0 012 0l.15.08a2 2 0 002.73-.73l.22-.39a2 2 0 00-.73-2.73l-.15-.08a2 2 0 01-1-1.74v-.5a2 2 0 011-1.74l.15-.1a2 2 0 00.73-2.73l-.22-.38a2 2 0 00-2.73-.73l-.15.08a2 2 0 01-2 0l-.43-.25a2 2 0 01-1-1.73V4a2 2 0 00-2-2zM12 15a3 3 0 100-6 3 3 0 000 6z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+          全局设置与备份
+        </button>
+      </div>
+    </aside>
+
+    <!-- 2. Main Dashboard Area -->
+    <main class="main-content">
+      
+      <!-- Top Bar (Search & Theme Switch) -->
+      <header class="topbar">
+        <div class="search-box">
+          <svg class="search-icon" viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+          <input type="text" id="search-input" placeholder="全局跨仓库搜索技能标题或描述..." autocomplete="off">
+        </div>
+        <div class="topbar-actions">
+          <button id="theme-toggle" class="btn btn-icon" title="切换主题">
+            <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5" stroke="currentColor" stroke-width="2" fill="none"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" stroke="currentColor" stroke-width="2"/></svg>
+            <svg class="icon-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+          </button>
+          <button id="btn-sync-all" class="btn btn-primary btn-glow-effect">
+            <svg class="icon animate-spin-hover" viewBox="0 0 24 24"><path d="M20 4v5h-5M4 20v-5h5M4 12a8 8 0 0114.93-4.07L20 9m-16 6l1.07 1.07A8 8 0 0020 12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+            同步云端
+          </button>
+        </div>
+      </header>
+
+      <!-- Dashboard Statistics and Info -->
+      <section class="banner-card">
+        <div class="banner-info">
+          <h2 id="active-repo-title">全部技能</h2>
+          <p id="active-repo-desc">正在查看所有绑定的技能仓库中的 AI 技能卡片。支持热更新与物理分发。</p>
+        </div>
+        <div class="banner-stats">
+          <div class="stat-item">
+            <span class="stat-value" id="stat-total-skills">0</span>
+            <span class="stat-label">总技能数</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value" id="stat-active-agy">0</span>
+            <span class="stat-label">AGY 启用</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value" id="stat-active-reasonix">0</span>
+            <span class="stat-label">Reasonix</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Main Skills Catalog Grid -->
+      <section class="skills-grid-container">
+        <div class="skills-grid" id="skills-grid">
+          <!-- Skill Cards Populated Dynamically -->
+        </div>
+        
+        <!-- Empty State -->
+        <div class="empty-state" id="empty-state" style="display: none;">
+          <div class="empty-icon">📂</div>
+          <h3>没有发现技能</h3>
+          <p>当前仓库无匹配技能，或者该仓库镜像尚未同步克隆。点击上方【同步云端】拉取技能吧！</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Modal A: Add Repository -->
+  <div class="modal-overlay" id="modal-add-repo">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>添加自定义技能仓库</h2>
+        <button class="btn-close-modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="new-repo-name">仓库名称</label>
+          <input type="text" id="new-repo-name" placeholder="例如：我的小说专属技能库" required>
+        </div>
+        <div class="form-group">
+          <label for="new-repo-url">Git 仓库链接</label>
+          <input type="url" id="new-repo-url" placeholder="https://github.com/username/repo.git" required>
+          <span class="form-tip">支持 HTTPS 格式的公开 Git 仓库链接</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-cancel">取消</button>
+        <button id="btn-save-repo" class="btn btn-primary">保存仓库</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal B: Global Settings & WebDAV Backup -->
+  <div class="modal-overlay" id="modal-settings">
+    <div class="modal-card modal-large">
+      <div class="modal-header">
+        <h2>全局配置与云端声明式备份</h2>
+        <button class="btn-close-modal">&times;</button>
+      </div>
+      <div class="modal-body grid-2">
+        <!-- Column 1: WebDAV Server Setup -->
+        <div class="setting-col">
+          <h3 class="section-subtitle">WebDAV 配置</h3>
+          <div class="form-group">
+            <label for="webdav-url">WebDAV 服务器地址</label>
+            <input type="url" id="webdav-url" placeholder="https://dav.jianguoyun.com/dav/">
+          </div>
+          <div class="form-group">
+            <label for="webdav-user">账号 / 邮箱</label>
+            <input type="text" id="webdav-user" placeholder="your_email@example.com">
+          </div>
+          <div class="form-group">
+            <label for="webdav-pass">应用授权密码</label>
+            <input type="password" id="webdav-pass" placeholder="your_app_password">
+          </div>
+          <div class="form-group-row">
+            <label class="switch-container">
+              <input type="checkbox" id="webdav-auto-backup">
+              <span class="switch-slider"></span>
+            </label>
+            <div class="switch-info">
+              <span class="switch-label">静默自动备份 (Auto Backup)</span>
+              <span class="switch-desc">当开关状态变动或系统启动时，自动在云端静默压缩同步账本。</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Column 2: Backup Tasks -->
+        <div class="setting-col">
+          <h3 class="section-subtitle">云端备份与工作流复活</h3>
+          <p class="desc-text">声明式云端存储将仅打包您的多仓库清单、主题选择、自动同步和启用状态配置账本，免去多余物理包体积，安全且高速。</p>
+          
+          <div class="backup-actions">
+            <button id="btn-cloud-backup" class="btn btn-primary btn-block">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M12 5l-4 4m4-4l4 4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+              立刻压缩备份到云端
+            </button>
+            <button id="btn-cloud-restore" class="btn btn-danger btn-block">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M12 19V5M12 19l-4-4m4 4l4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+              从云端拉取一键复活工作流
+            </button>
+          </div>
+          <div class="info-alert">
+            <strong>💡 温馨提示：</strong> 一键复活将自动拉取保存在 WebDAV 云端的 <code>config_backup.zip</code>，恢复配置文件，并全自动为您在新设备上重新克隆 Git 仓库及分发物理文件！
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-save-settings" class="btn btn-primary">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div class="toast-notification" id="toast">提示信息</div>
+
+  <script src="index.js"></script>
+</body>
+</html>

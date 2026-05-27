@@ -1,0 +1,31 @@
+{
+  "theme": "light",
+  "webdav": {
+    "url": "https://dav.jianguoyun.com/dav/",
+    "user": "your_email@qq.com",
+    "pass": "your_app_password",
+    "auto_backup_enabled": true
+  },
+  "repositories": [
+    {
+      "id": "official-public-repo",
+      "name": "公共筛选库",
+      "url": "https://github.com/ComposioHQ/awesome-claude-skills.git",
+      "is_official": true
+    },
+    {
+      "id": "repo-1779848555362",
+      "name": "awk",
+      "url": "https://github.com/awkervic/skill",
+      "is_official": false
+    }
+  ],
+  "skills_status": {
+    "code-expert": {
+      "repo_id": "official-public-repo",
+      "enable_agy": false,
+      "enable_reasonix": false,
+      "auto_update": false
+    }
+  }
+}

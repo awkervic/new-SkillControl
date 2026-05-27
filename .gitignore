@@ -1,0 +1,25 @@
+# Compiled Rust code
+/target/
+/src-tauri/target/
+
+# Node dependencies
+/node_modules/
+
+# Local state & Backups
+/my-brain/repos/
+/my-brain/staging/
+/my-brain/config_backup.zip
+/my-brain/downloaded_backup.zip
+/releases/
+
+
+# IDEs & System
+.idea/
+.vscode/
+*.suo
+*.ntvsca
+*.ntvs_analysis
+*.suo
+Thumbs.db
+ehthumbs.db
+Desktop.ini
