@@ -8,6 +8,7 @@ use tokio::process::Command as TokioCommand;
 use chrono::prelude::*;
 use std::time::Duration;
 use tauri::Manager;
+use reqwest::header;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -146,8 +147,18 @@ fn get_staging_path() -> PathBuf {
 }
 
 /// Create a reqwest::Client with short timeouts for metadata operations (PROPFIND, MKCOL).
+/// Injects standard browser User-Agent to bypass 403 on restrictive WebDAV servers.
 fn create_webdav_client() -> reqwest::Client {
+    let mut default_headers = header::HeaderMap::new();
+    default_headers.insert(header::USER_AGENT,
+        header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
+    default_headers.insert(header::ACCEPT,
+        header::HeaderValue::from_static("*/*"));
+    default_headers.insert(header::ACCEPT_LANGUAGE,
+        header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
+
     reqwest::Client::builder()
+        .default_headers(default_headers)
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
         .build()
@@ -156,8 +167,22 @@ fn create_webdav_client() -> reqwest::Client {
 
 /// Create a reqwest::Client with longer timeout for file upload/download.
 /// ZIP downloads can exceed 15s on slow connections.
+/// Injects browser User-Agent + full header set for 403 bypass.
 fn create_webdav_download_client() -> reqwest::Client {
+    let mut default_headers = header::HeaderMap::new();
+    default_headers.insert(header::USER_AGENT,
+        header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
+    default_headers.insert(header::ACCEPT,
+        header::HeaderValue::from_static("*/*"));
+    default_headers.insert(header::ACCEPT_LANGUAGE,
+        header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
+    default_headers.insert(header::ACCEPT_ENCODING,
+        header::HeaderValue::from_static("gzip, deflate"));
+    default_headers.insert(header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache"));
+
     reqwest::Client::builder()
+        .default_headers(default_headers)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(120))
         .build()
@@ -1256,40 +1281,88 @@ async fn get_backup_list() -> Result<Vec<HashMap<String, String>>, String> {
 #[tauri::command]
 async fn trigger_restore_version(filename: String) -> Result<AppConfig, String> {
     let config = get_config_internal().await?;
-    
-    let mut url = config.webdav.url.clone();
-    if !url.ends_with('/') {
-        url.push('/');
-    }
-    url.push_str("new-SkillControl/");
-    url.push_str(&filename);
-
-    // 1. First verify the file exists via PROPFIND (some WebDAV servers return 403 on direct GET)
-    println!("DEBUG: [trigger_restore_version] verifying file at URL: {}", url);
     let client = create_webdav_download_client();
     let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
 
-    // Probe with PROPFIND first to confirm the file exists and get correct href
-    let probe = client.request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
+    // Step 1: PROPFIND the new-SkillControl/ folder to get the SERVER's exact href for this file.
+    // Some WebDAV servers (e.g. 115 drive) use different internal paths than what we construct.
+    let mut folder_url = config.webdav.url.clone();
+    if !folder_url.ends_with('/') { folder_url.push('/'); }
+    folder_url.push_str("new-SkillControl/");
+
+    println!("DEBUG: [trigger_restore_version] PROPFIND folder: {}", folder_url);
+    let propfind = client.request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &folder_url)
         .header("Authorization", &auth_header)
-        .header("Depth", "0")
+        .header("Depth", "1")
         .send()
         .await
-        .map_err(|e| format!("Failed to PROPFIND backup file: {}", e))?;
+        .map_err(|e| format!("连接 WebDAV 失败: {}", e))?;
 
-    if !probe.status().is_success() {
-        println!("DEBUG: [trigger_restore_version] PROPFIND failed with status: {}", probe.status());
-        // Fall through to GET anyway — some servers reject PROPFIND on files but allow GET
+    if !propfind.status().is_success() {
+        return Err(format!("文件夹查询失败: 服务器返回 {}", propfind.status()));
     }
 
-    // 2. Download Backup ZIP — use standard WebDAV headers
-    let response = client.get(&url)
+    let xml = propfind.text().await.map_err(|e| e.to_string())?;
+
+    // Extract the href from PROPFIND XML that contains our filename
+    // PROPFIND XML format: <d:href>http://server/path/file.zip</d:href>
+    let search_for = &filename; // e.g. "backup-2026-5-27-18-00-00.zip"
+    let download_url = {
+        let mut best = None;
+        let lower_xml = xml.to_lowercase();
+        let lower_search = search_for.to_lowercase();
+        let mut pos = 0;
+        while let Some(href_start) = lower_xml[pos..].find("<d:href>") {
+            let content_start = pos + href_start + "<d:href>".len();
+            if let Some(href_end) = lower_xml[content_start..].find("</d:href>") {
+                let href_content = &lower_xml[content_start..content_start + href_end];
+                let actual = &xml[content_start..content_start + href_end]; // original case
+                if href_content.contains(&lower_search) {
+                    // Check if it ends with .zip
+                    if href_content.ends_with(".zip") && href_content.contains("backup-") {
+                        best = Some(actual.to_string());
+                    }
+                }
+                pos = content_start + href_end + "</d:href>".len();
+            } else { break; }
+        }
+        best.ok_or_else(|| format!("在 WebDAV 响应中未找到匹配的备份文件: {}", filename))?
+    };
+
+    println!("DEBUG: [trigger_restore_version] server href: {}", download_url);
+
+    // Ensure download_url is absolute
+    let final_url = if download_url.starts_with("http://") || download_url.starts_with("https://") {
+        download_url.clone()
+    } else if download_url.starts_with('/') {
+        // Relative to server root — extract scheme+host from config.webdav.url
+        let base = config.webdav.url.trim_end_matches('/');
+        // Find the server root (scheme://host:port)
+        if let Some(slash_pos) = base.find("://") {
+            if let Some(next_slash) = base[slash_pos + 3..].find('/') {
+                let server_root = &base[..slash_pos + 3 + next_slash];
+                format!("{}{}", server_root, download_url)
+            } else {
+                format!("{}{}", base, download_url)
+            }
+        } else {
+            format!("{}{}", base, download_url)
+        }
+    } else {
+        // Relative to the folder — unlikely but handle it
+        format!("{}{}", folder_url, download_url)
+    };
+
+    println!("DEBUG: [trigger_restore_version] final download URL: {}", final_url);
+
+    // Step 2: Download the ZIP from the server's canonical URL
+    let response = client.get(&final_url)
         .header("Authorization", &auth_header)
         .header("Depth", "0")
         .header("Translate", "f")
         .send()
         .await
-        .map_err(|e| format!("Failed to download backup: {}", e))?;
+        .map_err(|e| format!("下载备份文件失败: {}", e))?;
 
     if !response.status().is_success() {
         let status = response.status();
