@@ -978,3 +978,33 @@ body {
 .animate-spin-hover:hover {
   animation: spin 1.2s linear infinite;
 }
+
+/* Red crush trash button with rich premium aesthetics */
+.btn-crush-skill {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  font-weight: 500;
+  margin-left: 10px;
+  flex-shrink: 0;
+}
+
+.btn-crush-skill:hover {
+  background: #dc2626;
+  color: #ffffff;
+  border-color: #dc2626;
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.35);
+  transform: translateY(-1px);
+}
+
+.btn-crush-skill:active {
+  transform: translateY(0);
+}

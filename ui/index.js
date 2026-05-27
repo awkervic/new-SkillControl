@@ -117,6 +117,58 @@ async function refreshSkillsList() {
 // 5. Render Templates
 // ==========================================================================
 
+let currentRequestId = 0;
+let debounceTimeout = null;
+
+function selectRepository(repoId, repoName, repoDesc) {
+  state.activeRepoId = repoId;
+  dom.activeRepoTitle.textContent = repoName;
+  dom.activeRepoDesc.textContent = repoDesc;
+  renderSidebar();
+
+  if (debounceTimeout) {
+    clearTimeout(debounceTimeout);
+  }
+
+  debounceTimeout = setTimeout(async () => {
+    const requestId = ++currentRequestId;
+    
+    // Show premium visual loading state inside skills grid
+    dom.skillsGrid.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:80px 0;width:100%;grid-column:1/-1;">
+        <span style="display:inline-block;animation:spin 1s linear infinite;font-size:32px;">🔄</span>
+        <span style="color:var(--text-secondary);font-size:13.5px;letter-spacing:0.5px;font-weight:500;">正在为您全速扫描磁盘中...</span>
+      </div>
+    `;
+    dom.skillsGrid.style.display = 'flex';
+    dom.emptyState.style.display = 'none';
+
+    try {
+      let skills = [];
+      if (repoId === 'all' || repoId === 'downloaded') {
+        skills = await invoke('discover_all_skills');
+      } else {
+        skills = await invoke('discover_skills', { repoId });
+      }
+
+      if (requestId !== currentRequestId) {
+        console.log(`[Request ID Override] Ignored stale request ID: ${requestId} (current: ${currentRequestId})`);
+        return;
+      }
+
+      state.skills = skills;
+      renderStats();
+      renderSkillsGrid();
+    } catch (error) {
+      if (requestId === currentRequestId) {
+        showToast(`扫描目录失败: ${error}`, 'danger');
+        dom.skillsGrid.style.display = 'none';
+        dom.emptyState.style.display = 'flex';
+      }
+    }
+  }, 150);
+}
+
 function renderSidebar() {
   dom.repoList.innerHTML = '';
 
@@ -130,11 +182,7 @@ function renderSidebar() {
     </div>
   `;
   allItem.addEventListener('click', () => {
-    state.activeRepoId = 'all';
-    dom.activeRepoTitle.textContent = '全部技能';
-    dom.activeRepoDesc.textContent = '正在查看所有绑定的技能仓库中的 AI 技能卡片。支持热更新与物理分发。';
-    renderSidebar();
-    renderSkillsGrid();
+    selectRepository('all', '全部技能', '正在查看所有绑定的技能仓库中的 AI 技能卡片。支持热更新与物理分发。');
   });
   dom.repoList.appendChild(allItem);
 
@@ -148,11 +196,7 @@ function renderSidebar() {
     </div>
   `;
   downloadedItem.addEventListener('click', () => {
-    state.activeRepoId = 'downloaded';
-    dom.activeRepoTitle.textContent = '已下载技能';
-    dom.activeRepoDesc.textContent = '正在查看所有已成功下载并安装到本地 Staging 暂存池的 AI 技能。';
-    renderSidebar();
-    renderSkillsGrid();
+    selectRepository('downloaded', '已下载技能', '正在查看所有已成功下载并安装到本地 Staging 暂存池的 AI 技能。');
   });
   dom.repoList.appendChild(downloadedItem);
 
@@ -175,17 +219,11 @@ function renderSidebar() {
 
     // Click to select Repository Filter
     item.addEventListener('click', (e) => {
-      // Check if delete button was clicked
       if (e.target.closest('.btn-delete-repo')) {
         handleDeleteRepo(repo.id, repo.name);
         return;
       }
-
-      state.activeRepoId = repo.id;
-      dom.activeRepoTitle.textContent = repo.name;
-      dom.activeRepoDesc.textContent = `仓库链接: ${repo.url}。点击“Sync Now”或“同步云端”更新本地物理镜像。`;
-      renderSidebar();
-      renderSkillsGrid();
+      selectRepository(repo.id, repo.name, `仓库链接: ${repo.url}。点击“Sync Now”或“同步云端”更新本地物理镜像。`);
     });
 
     dom.repoList.appendChild(item);
@@ -258,6 +296,11 @@ function renderSkillsGrid() {
           <h3 class="skill-title">${skill.name}</h3>
           <span class="skill-repo-badge">📦 隶属仓库: ${repoName}</span>
         </div>
+        ${state.activeRepoId === 'downloaded' ? `
+          <button class="btn-crush-skill" data-skill="${skill.id}" title="彻底物理粉碎并抹除此技能">
+            🗑️ 彻底删除
+          </button>
+        ` : ''}
       </div>
       <p class="skill-desc">${skill.description || '暂无对该智能体技能的详细描述文本。'}</p>
       
@@ -431,6 +474,35 @@ function renderSkillsGrid() {
           btn.disabled = false;
           btn.innerHTML = `🔄 Sync Now`;
           showToast(`同步失败: ${error}`, 'danger');
+        }
+      });
+    }
+
+    // Crush/Uninstall Skill Click
+    const btnCrush = card.querySelector('.btn-crush-skill');
+    if (btnCrush) {
+      btnCrush.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        const skillId = btn.dataset.skill;
+        if (confirm(`【铁血物理粉碎警告】\n您确认要彻底粉碎并删除技能 [${skillId}] 吗？\n这将直接物理删除暂存池（my-brain 及 staging 目录下的源文件）、AGY/Reasonix 对应的所有物理分发，并彻底从本系统的 config.json 账本中注销！`)) {
+          btn.disabled = true;
+          btn.textContent = '🗑️ 正在粉碎...';
+          
+          try {
+            state.config = await invoke('uninstall_skill', { skillId });
+            showToast(`技能 [${skillId}] 已被彻底粉碎，从系统里完全灰飞烟灭！`);
+            
+            // Notify Reasonix to reload playbooks after deletion
+            invoke('notify_reasonix_reload').catch(err => {
+              console.warn('[SkillControl] Reasonix reload note:', err);
+            });
+            
+            await refreshSkillsList();
+          } catch (error) {
+            btn.disabled = false;
+            btn.textContent = '🗑️ 彻底删除';
+            showToast(`粉碎删除失败: ${error}`, 'danger');
+          }
         }
       });
     }

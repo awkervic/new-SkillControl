@@ -18,17 +18,23 @@
       "name": "awk",
       "url": "https://github.com/awkervic/skill",
       "is_official": false
+    },
+    {
+      "id": "repo-1779871498161",
+      "name": "claude官方",
+      "url": "https://github.com/anthropics/skills",
+      "is_official": false
     }
   ],
   "skills_status": {
-    "ai-neat-skill": {
+    "think-same-skill": {
       "repo_id": "repo-1779848555362",
       "scope": "global",
       "enable_agy": true,
       "enable_reasonix": true,
       "auto_update": true
     },
-    "think-same-skill": {
+    "ai-neat-skill": {
       "repo_id": "repo-1779848555362",
       "scope": "global",
       "enable_agy": true,
