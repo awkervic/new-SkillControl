@@ -81,3 +81,10 @@
 1. **Time Machine 设置面板格式修复**：修复内联样式使用未定义 CSS 变量 `var(--text-main)` 导致文字不可见；缩短 select 错误提示防止撑破 flex 布局；全部内联样式迁移为独立 CSS 类（`.timeline-section` / `.timeline-row` / `.timeline-select` 等），保证多主题一致性。
 2. **版本 v0.1.3 发布**：版本号从 0.1.1 更新至 0.1.3，cargo tauri build 重新编译打包，GitHub Release 覆盖上架。
 3. **README.md 首页介绍迭代**：更新中英文首页介绍文案，新增冷启动卡死修复、OnceLock 重构等核心亮点说明。
+
+---
+
+### [2026-05-27 20:30] (北京时间)
+
+**核心变动描述：**
+1. **WebDAV 云恢复下载 403 Forbidden 修复**：新增 `create_webdav_download_client()`（120s 超时 + 10s 连接超时，专用于文件上传/下载）；下载前 PROPFIND 探路确认文件存在；添加 `Depth: 0` + `Translate: f` WebDAV 标准请求头；失败时日志打印 HTTP body 前 200 字符辅助定位。解决某些 WebDAV 服务器（如 115 网盘）拒绝直接 GET 下载的问题。

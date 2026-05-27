@@ -145,11 +145,21 @@ fn get_staging_path() -> PathBuf {
     path
 }
 
-/// Create a reqwest::Client with short timeouts to prevent network hangs.
+/// Create a reqwest::Client with short timeouts for metadata operations (PROPFIND, MKCOL).
 fn create_webdav_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Create a reqwest::Client with longer timeout for file upload/download.
+/// ZIP downloads can exceed 15s on slow connections.
+fn create_webdav_download_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -1029,8 +1039,8 @@ async fn backup_to_webdav_internal(config: &AppConfig) -> Result<String, String>
     let backup_zip_path = get_my_brain_path().join("config_backup_temp.zip");
     zip_my_brain(&backup_zip_path, &get_my_brain_path())?;
 
-    // Create client & authorization header
-    let client = create_webdav_client();
+    // Create client with longer timeout for upload
+    let client = create_webdav_download_client();
     let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
 
     // 1. Create or verify dedicated 'new-SkillControl' WebDAV directory via MKCOL
@@ -1088,22 +1098,30 @@ async fn trigger_resurrect() -> Result<AppConfig, String> {
         url.push('/');
     }
     url.push_str("config_backup.zip");
+    println!("DEBUG: [trigger_resurrect] downloading from URL: {}", url);
 
-    let client = create_webdav_client();
+    // Use download client with 120s timeout for ZIP download
+    let client = create_webdav_download_client();
     let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
 
-    // 1. Download Backup ZIP
+    // 1. Download Backup ZIP with WebDAV headers
     let response = client.get(&url)
         .header("Authorization", &auth_header)
+        .header("Depth", "0")
+        .header("Translate", "f")
         .send()
         .await
         .map_err(|e| format!("Failed to download backup: {}", e))?;
 
     if !response.status().is_success() {
-        return Err(format!("Download failed. WebDAV server returned: {}", response.status()));
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        println!("DEBUG: [trigger_resurrect] GET failed with {} — body: {}", status, &body[..body.len().min(200)]);
+        return Err(format!("下载失败: 服务器返回 {} — 请确认 config_backup.zip 存在且有读取权限", status));
     }
 
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    println!("DEBUG: [trigger_resurrect] downloaded {} bytes", bytes.len());
     let zip_path = get_my_brain_path().join("downloaded_backup.zip");
     fs::write(&zip_path, bytes).map_err(|e| e.to_string())?;
 
@@ -1246,21 +1264,42 @@ async fn trigger_restore_version(filename: String) -> Result<AppConfig, String> 
     url.push_str("new-SkillControl/");
     url.push_str(&filename);
 
-    let client = create_webdav_client();
+    // 1. First verify the file exists via PROPFIND (some WebDAV servers return 403 on direct GET)
+    println!("DEBUG: [trigger_restore_version] verifying file at URL: {}", url);
+    let client = create_webdav_download_client();
     let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
 
-    // 1. Download Backup ZIP
+    // Probe with PROPFIND first to confirm the file exists and get correct href
+    let probe = client.request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
+        .header("Authorization", &auth_header)
+        .header("Depth", "0")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to PROPFIND backup file: {}", e))?;
+
+    if !probe.status().is_success() {
+        println!("DEBUG: [trigger_restore_version] PROPFIND failed with status: {}", probe.status());
+        // Fall through to GET anyway — some servers reject PROPFIND on files but allow GET
+    }
+
+    // 2. Download Backup ZIP — use standard WebDAV headers
     let response = client.get(&url)
         .header("Authorization", &auth_header)
+        .header("Depth", "0")
+        .header("Translate", "f")
         .send()
         .await
         .map_err(|e| format!("Failed to download backup: {}", e))?;
 
     if !response.status().is_success() {
-        return Err(format!("Download failed. WebDAV server returned: {}", response.status()));
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        println!("DEBUG: [trigger_restore_version] GET failed with {} — body: {}", status, &body[..body.len().min(200)]);
+        return Err(format!("下载失败: 服务器返回 {} — 请确认备份文件存在且有读取权限", status));
     }
 
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    println!("DEBUG: [trigger_restore_version] downloaded {} bytes", bytes.len());
     let my_brain_path = get_my_brain_path();
     let zip_path = my_brain_path.join("downloaded_backup_temp.zip");
     fs::write(&zip_path, bytes).map_err(|e| e.to_string())?;
