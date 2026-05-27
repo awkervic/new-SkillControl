@@ -21,8 +21,23 @@
     }
   ],
   "skills_status": {
+    "ai-neat-skill": {
+      "repo_id": "repo-1779848555362",
+      "scope": "global",
+      "enable_agy": true,
+      "enable_reasonix": true,
+      "auto_update": true
+    },
+    "think-same-skill": {
+      "repo_id": "repo-1779848555362",
+      "scope": "global",
+      "enable_agy": true,
+      "enable_reasonix": true,
+      "auto_update": true
+    },
     "code-expert": {
       "repo_id": "official-public-repo",
+      "scope": "global",
       "enable_agy": false,
       "enable_reasonix": false,
       "auto_update": false

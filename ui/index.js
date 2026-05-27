@@ -138,6 +138,24 @@ function renderSidebar() {
   });
   dom.repoList.appendChild(allItem);
 
+  // "Downloaded Skills" Tab
+  const downloadedItem = document.createElement('li');
+  downloadedItem.className = `repo-item ${state.activeRepoId === 'downloaded' ? 'active' : ''}`;
+  downloadedItem.innerHTML = `
+    <div class="repo-info-row">
+      <span>📥</span>
+      <span class="repo-name-text">已下载技能</span>
+    </div>
+  `;
+  downloadedItem.addEventListener('click', () => {
+    state.activeRepoId = 'downloaded';
+    dom.activeRepoTitle.textContent = '已下载技能';
+    dom.activeRepoDesc.textContent = '正在查看所有已成功下载并安装到本地 Staging 暂存池的 AI 技能。';
+    renderSidebar();
+    renderSkillsGrid();
+  });
+  dom.repoList.appendChild(downloadedItem);
+
   // Individual Repositories
   state.config.repositories.forEach(repo => {
     const item = document.createElement('li');
@@ -194,7 +212,9 @@ function renderSkillsGrid() {
   
   // 1. Filter by Active Repository
   let filtered = state.skills;
-  if (state.activeRepoId !== 'all') {
+  if (state.activeRepoId === 'downloaded') {
+    filtered = filtered.filter(s => s.is_downloaded === true);
+  } else if (state.activeRepoId !== 'all') {
     filtered = filtered.filter(s => s.repo_id === state.activeRepoId);
   }
   
@@ -277,15 +297,16 @@ function renderSkillsGrid() {
         </div>
       </div>
 
-      <!-- Scope Selector (Global / Project) -->
+      <!-- Scope Selector (Global / Project / Shared) -->
       <div class="scope-selector-row">
         <div class="switch-label-group">
           <span class="switch-label-name" style="color:var(--text-secondary);font-size:11px;">📡 分发范围</span>
-          <span class="switch-label-desc">Global（用户级）| Project（项目级）</span>
+          <span class="switch-label-desc">Global（全局级）| Project（项目级）| Shared（共享级）</span>
         </div>
         <div class="scope-toggle-group">
           <button class="btn-scope btn-scope-global ${status.scope === 'global' ? 'active' : ''}" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-scope="global">Global</button>
           <button class="btn-scope btn-scope-project ${status.scope === 'project' ? 'active' : ''}" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-scope="project">Project</button>
+          <button class="btn-scope btn-scope-shared ${status.scope === 'shared' ? 'active' : ''}" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-scope="shared">Shared</button>
         </div>
       </div>
 

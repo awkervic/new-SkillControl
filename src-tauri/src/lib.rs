@@ -33,10 +33,15 @@ pub struct Repository {
 pub struct SkillStatus {
     pub repo_id: String,
     /// Distribution scope: "global" (user-wide) or "project" (current project tree)
+    #[serde(default = "default_scope")]
     pub scope: String,
     pub enable_agy: bool,
     pub enable_reasonix: bool,
     pub auto_update: bool,
+}
+
+fn default_scope() -> String {
+    "global".to_string()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -55,6 +60,7 @@ pub struct SkillMetadata {
     pub repo_id: String,
     pub relative_path: String,
     pub is_installed: bool,
+    pub is_downloaded: bool,
 }
 
 impl Default for AppConfig {
@@ -427,8 +433,10 @@ fn parse_markdown_skill(file_path: &Path, root: &Path, repo_id: &str) -> Option<
     let relative_path = file_path.strip_prefix(root).ok()?
         .to_string_lossy().into_owned();
 
-    // Check if skill is already in staging
-    let is_installed = get_staging_path().join(format!("{}.md", id)).exists();
+    // Check if skill is already in staging (check both staging subfolder and my-brain root folder)
+    let is_installed = get_staging_path().join(format!("{}.md", id)).exists() ||
+                       get_my_brain_path().join(format!("{}.md", id)).exists();
+    let is_downloaded = is_installed;
 
     Some(SkillMetadata {
         id,
@@ -437,6 +445,7 @@ fn parse_markdown_skill(file_path: &Path, root: &Path, repo_id: &str) -> Option<
         repo_id: repo_id.to_string(),
         relative_path,
         is_installed,
+        is_downloaded,
     })
 }
 
@@ -484,12 +493,17 @@ fn sync_agy_config_json(skill_id: &str, skill_name: &str, enable: bool, scope: &
         AgyConfig::default()
     };
 
-    let skill_path = if scope == "project" {
+    let skill_path = if scope == "project" || scope == "workspace" {
         get_project_root().join(format!(".agents\\skills\\{}\\SKILL.md", skill_id))
             .to_string_lossy().to_string()
+    } else if scope == "shared" {
+        format!(
+            "C:\\Users\\{}\\.gemini\\skills\\{}\\SKILL.md",
+            username, skill_id
+        )
     } else {
         format!(
-            "C:\\Users\\{}\\.gemini\\antigravity\\skills\\{}\\SKILL.md",
+            "C:\\Users\\{}\\.gemini\\antigravity-cli\\skills\\{}\\SKILL.md",
             username, skill_id
         )
     };
@@ -596,6 +610,10 @@ async fn update_skill_scope(
     scope: String,
 ) -> Result<AppConfig, String> {
     let mut config = get_config()?;
+    
+    // First, physically clean up existing distribution paths under the old scope
+    let _ = remove_physical_distribution(&skill_id);
+
     let mut skill_stat = config.skills_status.get(&skill_id).cloned().unwrap_or_else(|| SkillStatus {
         repo_id: repo_id.clone(),
         scope: scope.clone(),
@@ -603,9 +621,14 @@ async fn update_skill_scope(
         enable_reasonix: false,
         auto_update: true,
     });
+    
     skill_stat.scope = scope;
-    config.skills_status.insert(skill_id, skill_stat);
+    config.skills_status.insert(skill_id.clone(), skill_stat);
     save_config(config.clone()).await?;
+
+    // Now, re-distribute files under the new scope
+    let _ = sync_physical_distributions_for_skill(&skill_id, &config);
+
     Ok(config)
 }
 
@@ -626,14 +649,19 @@ fn resolve_scope_path(skill_id: &str, scope: &str, cli_type: &str) -> Result<Pat
         ("reasonix", "project") => Ok(
             project_root.join(".reasonix\\skills").join(format!("{}.md", skill_id))
         ),
-        // AGY - Global:  ~/.gemini/antigravity/skills/<id>/SKILL.md
+        // AGY - Global:  C:\Users\<username>\.gemini\antigravity-cli\skills\<skill_id>\SKILL.md
         ("agy", "global") => Ok(
-            PathBuf::from(format!("C:\\Users\\{}\\.gemini\\antigravity\\skills", username))
+            PathBuf::from(format!("C:\\Users\\{}\\.gemini\\antigravity-cli\\skills", username))
                 .join(skill_id).join("SKILL.md")
         ),
-        // AGY - Project:  <project>/.agents/skills/<id>/SKILL.md
-        ("agy", "project") => Ok(
+        // AGY - Project/Workspace:  <project>/.agents/skills/<skill_id>/SKILL.md
+        ("agy", "project") | ("agy", "workspace") => Ok(
             project_root.join(".agents\\skills").join(skill_id).join("SKILL.md")
+        ),
+        // AGY - Shared:  C:\Users\<username>\.gemini\skills\<skill_id>\SKILL.md
+        ("agy", "shared") => Ok(
+            PathBuf::from(format!("C:\\Users\\{}\\.gemini\\skills", username))
+                .join(skill_id).join("SKILL.md")
         ),
         _ => Err(format!("Unknown CLI type '{}' or scope '{}'", cli_type, scope)),
     }
@@ -663,11 +691,11 @@ fn sync_physical_distributions_for_skill(skill_id: &str, config: &AppConfig) -> 
         fs::write(&agy_path, &staging_content).map_err(|e| format!(
             "Failed to write AGY file {}: {}", agy_path.display(), e
         ))?;
-    } else if agy_path.exists() {
-        let _ = fs::remove_file(&agy_path);
-        // Remove parent dir if empty
+    } else {
         if let Some(parent) = agy_path.parent() {
-            let _ = fs::remove_dir(parent);
+            if parent.exists() {
+                let _ = fs::remove_dir_all(parent);
+            }
         }
     }
 
@@ -763,38 +791,45 @@ fn remove_physical_distribution(skill_id: &str) -> Result<(), String> {
     let project_root = get_project_root();
 
     // 无论什么 Scope 都擦除 —— 不放过任何一个残留
-    let all_paths = [
-        // Reasonix global
+    // Clean Reasonix files
+    let reasonix_paths = [
         PathBuf::from(format!("C:\\Users\\{}\\.reasonix\\skills\\{}.md", username, skill_id)),
-        // Reasonix project
         project_root.join(format!(".reasonix\\skills\\{}.md", skill_id)),
-        // AGY global
-        PathBuf::from(format!("C:\\Users\\{}\\.gemini\\antigravity\\skills\\{}\\SKILL.md", username, skill_id)),
-        // AGY project
-        project_root.join(format!(".agents\\skills\\{}\\SKILL.md", skill_id)),
     ];
-
-    for path in &all_paths {
+    for path in &reasonix_paths {
         if path.exists() {
             let _ = fs::remove_file(path);
-            // 尝试清理空的父文件夹
-            if let Some(parent) = path.parent() {
-                if parent.exists() && parent.read_dir().map(|mut i| i.next().is_none()).unwrap_or(false) {
-                    let _ = fs::remove_dir(parent);
-                }
-            }
         }
     }
 
-    // 清理 staging
+    // Clean AGY (both files and folders recursively to prevent residue)
+    let agy_dirs = [
+        // Global
+        PathBuf::from(format!("C:\\Users\\{}\\.gemini\\antigravity-cli\\skills\\{}", username, skill_id)),
+        // Project
+        project_root.join(format!(".agents\\skills\\{}", skill_id)),
+        // Shared
+        PathBuf::from(format!("C:\\Users\\{}\\.gemini\\skills\\{}", username, skill_id)),
+        // Legacy (incorrect path without -cli)
+        PathBuf::from(format!("C:\\Users\\{}\\.gemini\\antigravity\\skills\\{}", username, skill_id)),
+    ];
+
+    for dir in &agy_dirs {
+        if dir.exists() {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    // Clean staging
     let staging_file = get_staging_path().join(format!("{}.md", skill_id));
     if staging_file.exists() {
         let _ = fs::remove_file(&staging_file);
     }
 
-    // 清理 AGY config.json 中的索引
+    // Clean AGY config.json indices
     let _ = sync_agy_config_json(skill_id, skill_id, false, "global");
     let _ = sync_agy_config_json(skill_id, skill_id, false, "project");
+    let _ = sync_agy_config_json(skill_id, skill_id, false, "shared");
 
     Ok(())
 }

@@ -22,3 +22,19 @@
    - *修复方案*：在 `lib.rs` 的 Markdown 解析器中集成了**自适应父目录降级算法**——若检测到文件名是通用的 `SKILL`、`README` 等，系统会自动向上追溯其父文件夹名称（如 `ai-neat-skill`，`think-same-skill`）作为唯一 ID，从而完美实现技能卡片的**独立下载、独立分发、独立标记与零名冲突状态管理**。
 3. **修复 Git 意外损坏与同步推送**：重新初始化并成功修复了受损的本地 Git 跟踪状态，保留了全部修改过的核心代码并同步提交发布上云。
 
+---
+
+### [2026-05-27 16:11] (北京时间)
+
+**核心变动描述：**
+1. **多重分发范围扩展 (Shared Scope Support)**：
+   - 前端 (`ui/index.js`) 扩展了分发范围选择器，新增了 `Shared`（共享级）选项，为用户提供 Global、Project、Shared 三种维度分发能力。同时在侧边栏新增了专门的 `已下载技能` (Downloaded Skills) 过滤面板，可一键筛选本地已下载安装的技能。
+   - 后端 (`src-tauri/src/lib.rs`) 全面升级以匹配 `shared` 作用域，并精确规范了各作用域的物理分发路径：
+     - Global：`C:\Users\<username>\.gemini\antigravity-cli\skills\<skill_id>\SKILL.md`
+     - Project/Workspace：`<project_root>\.agents\skills\<skill_id>\SKILL.md`
+     - Shared：`C:\Users\<username>\.gemini\skills\<skill_id>\SKILL.md`
+2. **深度自适应清理与多线程安全同步**：
+   - 彻底重构了 `remove_physical_distribution` 方法。在进行技能卸载或 Scope 范围切换时，跨越所有可用作用域（包括已弃用的 Legacy `antigravity` 目录）进行物理文件的级联彻底清理和父文件夹递归安全擦除，彻底杜绝切换分发范围时的多重残留。
+   - 优化了技能状态检测。通过同时分析 `staging` 暂存区与 `my-brain` 根目录的物理存在性，智能解析并动态绑定 `is_downloaded` / `is_installed` 元数据字段。
+
+
