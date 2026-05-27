@@ -533,6 +533,47 @@ body {
   transform: translateX(18px);
 }
 
+/* Scope Selector Row */
+.scope-selector-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0 8px;
+  border-top: 1px solid var(--border-color);
+  margin-top: 4px;
+}
+
+.scope-toggle-group {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-scope {
+  padding: 4px 14px;
+  font-size: 10.5px;
+  font-weight: 600;
+  border-radius: 14px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.btn-scope:hover {
+  color: var(--text-primary);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.btn-scope.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+  box-shadow: 0 2px 8px var(--primary-glow);
+}
+
 /* Card Buttons Footer */
 .skill-card-footer {
   display: flex;

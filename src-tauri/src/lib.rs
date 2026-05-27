@@ -32,6 +32,8 @@ pub struct Repository {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SkillStatus {
     pub repo_id: String,
+    /// Distribution scope: "global" (user-wide) or "project" (current project tree)
+    pub scope: String,
     pub enable_agy: bool,
     pub enable_reasonix: bool,
     pub auto_update: bool,
@@ -464,7 +466,7 @@ pub struct AgySkillEntry {
 /// Synchronise AGY's global `config.json` with our skill state.
 /// On enable: appends the skill to `installed_skills` (if absent).
 /// On disable: removes the skill from `installed_skills`.
-fn sync_agy_config_json(skill_id: &str, skill_name: &str, enable: bool) -> Result<(), String> {
+fn sync_agy_config_json(skill_id: &str, skill_name: &str, enable: bool, scope: &str) -> Result<(), String> {
     let username = home::home_dir()
         .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
         .ok_or_else(|| "Could not determine user home directory".to_string())?;
@@ -482,10 +484,15 @@ fn sync_agy_config_json(skill_id: &str, skill_name: &str, enable: bool) -> Resul
         AgyConfig::default()
     };
 
-    let skill_path = format!(
-        "C:\\Users\\{}\\.gemini\\skills\\shared\\{}\\SKILL.md",
-        username, skill_id
-    );
+    let skill_path = if scope == "project" {
+        get_project_root().join(format!(".agents\\skills\\{}\\SKILL.md", skill_id))
+            .to_string_lossy().to_string()
+    } else {
+        format!(
+            "C:\\Users\\{}\\.gemini\\antigravity\\skills\\{}\\SKILL.md",
+            username, skill_id
+        )
+    };
 
     if enable {
         // Append only if not already present
@@ -548,16 +555,23 @@ async fn toggle_skill_switch(
     repo_id: String,
     switch_type: String, // "agy", "reasonix", "auto_update"
     status: bool,
+    scope: Option<String>, // "global" | "project", None = keep existing
 ) -> Result<AppConfig, String> {
     let mut config = get_config()?;
     
     // Get or insert skill status
     let mut skill_stat = config.skills_status.get(&skill_id).cloned().unwrap_or_else(|| SkillStatus {
         repo_id: repo_id.clone(),
+        scope: scope.clone().unwrap_or_else(|| "global".to_string()),
         enable_agy: false,
         enable_reasonix: false,
         auto_update: true,
     });
+
+    // If scope was provided, update it
+    if let Some(s) = scope {
+        skill_stat.scope = s;
+    }
 
     match switch_type.as_str() {
         "agy" => skill_stat.enable_agy = status,
@@ -575,59 +589,110 @@ async fn toggle_skill_switch(
     Ok(config)
 }
 
+#[tauri::command]
+async fn update_skill_scope(
+    skill_id: String,
+    repo_id: String,
+    scope: String,
+) -> Result<AppConfig, String> {
+    let mut config = get_config()?;
+    let mut skill_stat = config.skills_status.get(&skill_id).cloned().unwrap_or_else(|| SkillStatus {
+        repo_id: repo_id.clone(),
+        scope: scope.clone(),
+        enable_agy: false,
+        enable_reasonix: false,
+        auto_update: true,
+    });
+    skill_stat.scope = scope;
+    config.skills_status.insert(skill_id, skill_stat);
+    save_config(config.clone()).await?;
+    Ok(config)
+}
+
+/// Resolve the destination path for a skill based on CLI type, scope, and action.
+fn resolve_scope_path(skill_id: &str, scope: &str, cli_type: &str) -> Result<PathBuf, String> {
+    let username = home::home_dir()
+        .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+        .ok_or_else(|| "Could not determine user home directory".to_string())?;
+    let project_root = get_project_root();
+
+    match (cli_type, scope) {
+        // Reasonix - Global:  ~/.reasonix/skills/<id>.md
+        ("reasonix", "global") => Ok(
+            PathBuf::from(format!("C:\\Users\\{}\\.reasonix\\skills", username))
+                .join(format!("{}.md", skill_id))
+        ),
+        // Reasonix - Project:  <project>/.reasonix/skills/<id>.md
+        ("reasonix", "project") => Ok(
+            project_root.join(".reasonix\\skills").join(format!("{}.md", skill_id))
+        ),
+        // AGY - Global:  ~/.gemini/antigravity/skills/<id>/SKILL.md
+        ("agy", "global") => Ok(
+            PathBuf::from(format!("C:\\Users\\{}\\.gemini\\antigravity\\skills", username))
+                .join(skill_id).join("SKILL.md")
+        ),
+        // AGY - Project:  <project>/.agents/skills/<id>/SKILL.md
+        ("agy", "project") => Ok(
+            project_root.join(".agents\\skills").join(skill_id).join("SKILL.md")
+        ),
+        _ => Err(format!("Unknown CLI type '{}' or scope '{}'", cli_type, scope)),
+    }
+}
+
 fn sync_physical_distributions_for_skill(skill_id: &str, config: &AppConfig) -> Result<(), String> {
     let skill_status = config.skills_status.get(skill_id)
         .ok_or_else(|| "Skill status not found".to_string())?;
 
+    let scope = &skill_status.scope;
+
     let staging_file = get_staging_path().join(format!("{}.md", skill_id));
     if !staging_file.exists() {
-        // If not installed, try to find and auto-install from local clone
         return Err("Skill is not downloaded yet. Please download the skill first.".to_string());
     }
 
-    let username = home::home_dir()
-        .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
-        .ok_or_else(|| "Could not determine user home directory".to_string())?;
-
-    // Read staging file content once for potential rewriting
     let staging_content = fs::read_to_string(&staging_file).map_err(|e| e.to_string())?;
 
-    // --- AGY Physical Setup ---
-    let agy_dest_dir = PathBuf::from(format!("C:\\Users\\{}\\.gemini\\skills\\shared\\{}\\", username, skill_id));
-    let agy_dest_file = agy_dest_dir.join("SKILL.md");
-
+    // ==================================================================
+    // AGY — copy raw markdown into <scope>/<skill_id>/SKILL.md folder
+    // ==================================================================
+    let agy_path = resolve_scope_path(skill_id, scope, "agy")?;
     if skill_status.enable_agy {
-        fs::create_dir_all(&agy_dest_dir).map_err(|e| e.to_string())?;
-        fs::copy(&staging_file, &agy_dest_file).map_err(|e| e.to_string())?;
-    } else if agy_dest_file.exists() {
-        let _ = fs::remove_file(&agy_dest_file);
-        let _ = fs::remove_dir(&agy_dest_dir);
+        let agy_dir = agy_path.parent()
+            .ok_or_else(|| "Invalid AGY path".to_string())?;
+        fs::create_dir_all(agy_dir).map_err(|e| e.to_string())?;
+        fs::write(&agy_path, &staging_content).map_err(|e| format!(
+            "Failed to write AGY file {}: {}", agy_path.display(), e
+        ))?;
+    } else if agy_path.exists() {
+        let _ = fs::remove_file(&agy_path);
+        // Remove parent dir if empty
+        if let Some(parent) = agy_path.parent() {
+            let _ = fs::remove_dir(parent);
+        }
     }
 
-    // --- Reasonix Physical Setup ---
-    // Reasonix detects playbooks by scanning for files with strict YAML frontmatter.
-    // We force-inject standard frontmatter so Reasonix reliably recognises this as a playbook.
-    let reasonix_dest_dir = PathBuf::from(format!("C:\\Users\\{}\\.reasonix\\playbooks\\shared\\", username));
-    let reasonix_dest_file = reasonix_dest_dir.join(format!("{}.md", skill_id));
-
+    // ==================================================================
+    // Reasonix — inject standardised frontmatter then write .md file
+    // ==================================================================
+    let reasonix_path = resolve_scope_path(skill_id, scope, "reasonix")?;
     if skill_status.enable_reasonix {
-        fs::create_dir_all(&reasonix_dest_dir).map_err(|e| e.to_string())?;
+        let reasonix_dir = reasonix_path.parent()
+            .ok_or_else(|| "Invalid Reasonix path".to_string())?;
+        fs::create_dir_all(reasonix_dir).map_err(|e| e.to_string())?;
 
-        // Force-write with standardised frontmatter for Reasonix
+        // Force Reasonix-compatible frontmatter with official fields
         let normalized = normalize_for_reasonix(skill_id, &staging_content);
-        fs::write(&reasonix_dest_file, normalized).map_err(|e| e.to_string())?;
-    } else if reasonix_dest_file.exists() {
-        let _ = fs::remove_file(&reasonix_dest_file);
+        fs::write(&reasonix_path, normalized).map_err(|e| format!(
+            "Failed to write Reasonix file {}: {}", reasonix_path.display(), e
+        ))?;
+    } else if reasonix_path.exists() {
+        let _ = fs::remove_file(&reasonix_path);
     }
 
-    // --- AGY config.json index sync ---
-    // After physical file operations, update AGY's global installed_skills registry
-    // so that `\/skills` CLI command reflects the change immediately.
-    let _ = sync_agy_config_json(
-        skill_id,
-        skill_id,  // name fallback — caller will pass the actual name later
-        skill_status.enable_agy,
-    );
+    // ==================================================================
+    // AGY config.json index sync
+    // ==================================================================
+    let _ = sync_agy_config_json(skill_id, skill_id, skill_status.enable_agy, scope);
 
     Ok(())
 }
@@ -635,15 +700,11 @@ fn sync_physical_distributions_for_skill(skill_id: &str, config: &AppConfig) -> 
 /// Ensures the markdown content has a Reasonix-compatible frontmatter with `name:` field.
 /// Reasonix scans playbooks by looking for `name:` in YAML frontmatter.
 /// If the file uses `id:` but no `name:`, we inject a proper `name:` field.
+/// Reasonix 官方规范 Frontmatter —— 强制焊入标准头部
+/// Reasonix 识别剧本的唯一依据是文件顶部的 YAML 前导符。
+/// 无论原文件是否有 Frontmatter，我们都将其全部替换为官方指定格式。
+/// 原始 Body（前导符之后的内容）保留不变。
 fn normalize_for_reasonix(skill_id: &str, content: &str) -> String {
-    // ---- NOTICE ----
-    // Reasonix requires a strict YAML frontmatter at the very top of every playbook.
-    // We ALWAYS overwrite the frontmatter with our standardised format so that
-    // Reasonix's scanner can reliably detect this file as a playbook.
-    // The original body (everything after the first frontmatter, or the whole file
-    // if no frontmatter existed) is preserved.
-
-    // Extract description from existing content if possible
     let description = extract_frontmatter_value(content, "description");
     let desc_str = if !description.is_empty() {
         description
@@ -651,21 +712,25 @@ fn normalize_for_reasonix(skill_id: &str, content: &str) -> String {
         format!("AI Agent skill: {}", skill_id)
     };
 
-    // Build the standard frontmatter
+    // 官方标准 Frontmatter
     let frontmatter = format!(
-        "---\nname: {}\ndescription: {}\nversion: 1.0.0\n---\n",
+        concat!(
+            "---\n",
+            "name: {}\n",
+            "description: {}\n",
+            "runAs: inline\n",
+            "allowed-tools: bash,read\n",
+            "model: deepseek-chat\n",
+            "max-iters: 16\n",
+            "---\n"
+        ),
         skill_id, desc_str
     );
 
-    // Extract the body by stripping existing frontmatter if any
+    // 剥离原 Frontmatter，仅保留 Body
     let body = if content.starts_with("---") {
-        // Split on second "---"
         let parts: Vec<&str> = content.splitn(3, "---").collect();
-        if parts.len() >= 3 {
-            parts[2].trim()
-        } else {
-            content.trim()
-        }
+        if parts.len() >= 3 { parts[2].trim() } else { content.trim() }
     } else {
         content.trim()
     };
@@ -673,15 +738,13 @@ fn normalize_for_reasonix(skill_id: &str, content: &str) -> String {
     format!("{}{}\n", frontmatter, body)
 }
 
-/// Helper: extract a YAML frontmatter field value by key from raw markdown
+/// Helper: 从原始 Markdown 中提取 YAML Frontmatter 字段值
 fn extract_frontmatter_value(content: &str, key: &str) -> String {
     if !content.starts_with("---") {
         return String::new();
     }
     let parts: Vec<&str> = content.splitn(3, "---").collect();
-    if parts.len() < 3 {
-        return String::new();
-    }
+    if parts.len() < 3 { return String::new(); }
     let yaml = parts[1];
     for line in yaml.lines() {
         let trimmed = line.trim();
@@ -697,24 +760,41 @@ fn remove_physical_distribution(skill_id: &str) -> Result<(), String> {
     let username = home::home_dir()
         .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
         .ok_or_else(|| "Could not determine user home directory".to_string())?;
+    let project_root = get_project_root();
 
-    let agy_dest_dir = PathBuf::from(format!("C:\\Users\\{}\\.gemini\\skills\\shared\\{}\\", username, skill_id));
-    let agy_dest_file = agy_dest_dir.join("SKILL.md");
-    if agy_dest_file.exists() {
-        let _ = fs::remove_file(&agy_dest_file);
-        let _ = fs::remove_dir(&agy_dest_dir);
+    // 无论什么 Scope 都擦除 —— 不放过任何一个残留
+    let all_paths = [
+        // Reasonix global
+        PathBuf::from(format!("C:\\Users\\{}\\.reasonix\\skills\\{}.md", username, skill_id)),
+        // Reasonix project
+        project_root.join(format!(".reasonix\\skills\\{}.md", skill_id)),
+        // AGY global
+        PathBuf::from(format!("C:\\Users\\{}\\.gemini\\antigravity\\skills\\{}\\SKILL.md", username, skill_id)),
+        // AGY project
+        project_root.join(format!(".agents\\skills\\{}\\SKILL.md", skill_id)),
+    ];
+
+    for path in &all_paths {
+        if path.exists() {
+            let _ = fs::remove_file(path);
+            // 尝试清理空的父文件夹
+            if let Some(parent) = path.parent() {
+                if parent.exists() && parent.read_dir().map(|mut i| i.next().is_none()).unwrap_or(false) {
+                    let _ = fs::remove_dir(parent);
+                }
+            }
+        }
     }
 
-    let reasonix_dest_dir = PathBuf::from(format!("C:\\Users\\{}\\.reasonix\\playbooks\\shared\\", username));
-    let reasonix_dest_file = reasonix_dest_dir.join(format!("{}.md", skill_id));
-    if reasonix_dest_file.exists() {
-        let _ = fs::remove_file(&reasonix_dest_file);
-    }
-
+    // 清理 staging
     let staging_file = get_staging_path().join(format!("{}.md", skill_id));
     if staging_file.exists() {
         let _ = fs::remove_file(&staging_file);
     }
+
+    // 清理 AGY config.json 中的索引
+    let _ = sync_agy_config_json(skill_id, skill_id, false, "global");
+    let _ = sync_agy_config_json(skill_id, skill_id, false, "project");
 
     Ok(())
 }
@@ -991,6 +1071,7 @@ pub fn run() {
             discover_all_skills,
             install_skill,
             toggle_skill_switch,
+            update_skill_scope,
             sync_skill_now,
             sync_all_repositories,
             sync_single_repository,

@@ -224,6 +224,7 @@ function renderSkillsGrid() {
     // Retrieve active switches status from config
     const status = state.config.skills_status[skill.id] || {
       repo_id: skill.repo_id,
+      scope: 'global',
       enable_agy: false,
       enable_reasonix: false,
       auto_update: true
@@ -276,6 +277,18 @@ function renderSkillsGrid() {
         </div>
       </div>
 
+      <!-- Scope Selector (Global / Project) -->
+      <div class="scope-selector-row">
+        <div class="switch-label-group">
+          <span class="switch-label-name" style="color:var(--text-secondary);font-size:11px;">📡 分发范围</span>
+          <span class="switch-label-desc">Global（用户级）| Project（项目级）</span>
+        </div>
+        <div class="scope-toggle-group">
+          <button class="btn-scope btn-scope-global ${status.scope === 'global' ? 'active' : ''}" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-scope="global">Global</button>
+          <button class="btn-scope btn-scope-project ${status.scope === 'project' ? 'active' : ''}" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-scope="project">Project</button>
+        </div>
+      </div>
+
       <!-- Action Card Buttons Footer -->
       <div class="skill-card-footer">
         ${!skill.is_installed ? `
@@ -299,11 +312,14 @@ function renderSkillsGrid() {
         const checked = e.target.checked;
         
         try {
+          // Read current scope from the status in config
+          const scope = (state.config.skills_status[skillId] || {}).scope || 'global';
           state.config = await invoke('toggle_skill_switch', {
             skillId,
             repoId,
             switchType: type,
-            status: checked
+            status: checked,
+            scope: scope
           });
           renderStats();
           showToast(`技能 [${skillId}] 已${checked ? '点亮启动' : '注销关闭'} [${type.toUpperCase()}]`);
@@ -318,6 +334,28 @@ function renderSkillsGrid() {
         } catch (error) {
           e.target.checked = !checked; // revert
           showToast(`开关操作失败: ${error}`, 'danger');
+        }
+      });
+    });
+
+    // Scope selector click
+    card.querySelectorAll('.btn-scope').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const target = e.currentTarget;
+        const skillId = target.dataset.skill;
+        const repoId = target.dataset.repo;
+        const scope = target.dataset.scope;
+        
+        try {
+          state.config = await invoke('update_skill_scope', {
+            skillId, repoId, scope
+          });
+          // Update active visual
+          card.querySelectorAll('.btn-scope').forEach(b => b.classList.remove('active'));
+          target.classList.add('active');
+          showToast(`技能 [${skillId}] 分发范围切换为 [${scope.toUpperCase()}]`);
+        } catch (error) {
+          showToast(`范围切换失败: ${error}`, 'danger');
         }
       });
     });
