@@ -89,3 +89,11 @@
 **核心变动描述：**
 1. **WebDAV 云恢复下载 403 Forbidden 修复**：新增 `create_webdav_download_client()`（120s 超时 + 10s 连接超时，专用于文件上传/下载）；下载前 PROPFIND 探路确认文件存在；添加 `Depth: 0` + `Translate: f` WebDAV 标准请求头；失败时日志打印 HTTP body 前 200 字符辅助定位。解决某些 WebDAV 服务器（如 115 网盘）拒绝直接 GET 下载的问题。
 4. **WebDAV 403 绝杀重构**：两个客户端函数全部注入 Chrome 120 全套浏览器请求头（User-Agent / Accept / Accept-Language / Accept-Encoding / Cache-Control），伪装请求来源绕过网盘反爬拦截。下载改用 PROPFIND 响应中服务器返回的原始 href 路径，不再自行构造 URL，确保路径绝对一致。
+
+---
+
+### [2026-05-27 21:00] (北京时间)
+
+**核心变动描述：**
+1. **用户验证 WebDAV 历史版本恢复下载成功**：经过 Chrome 120 浏览器 UA 全套伪装 + PROPFIND href 真实路径下载双重修复后，用户从 115 网盘 WebDAV 成功下载备份 ZIP 并完成还原。403 Forbidden 问题彻底解决。
+2. **v0.1.3 Release 已覆盖发布**：包含冷启动卡死修复、Time Machine 面板格式修复、403 下载绝杀三大修复。完整 Release 页面：https://github.com/awkervic/new-SkillControl/releases/tag/v0.1.3
