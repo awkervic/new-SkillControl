@@ -405,8 +405,18 @@ fn parse_markdown_skill(file_path: &Path, root: &Path, repo_id: &str) -> Option<
     description = clean(description);
 
     if id.is_empty() {
-        // Fallback to file name stem
-        id = file_path.file_stem()?.to_string_lossy().into_owned();
+        // Fallback to parent directory name if the filename is generic (e.g., SKILL.md), otherwise use file name stem
+        let stem = file_path.file_stem()?.to_string_lossy().into_owned();
+        let upper_stem = stem.to_uppercase();
+        if upper_stem == "SKILL" || upper_stem == "README" || upper_stem == "CLAUDE" || upper_stem == "GEMINI" {
+            if let Some(parent) = file_path.parent() {
+                id = parent.file_name()?.to_string_lossy().into_owned();
+            } else {
+                id = stem;
+            }
+        } else {
+            id = stem;
+        }
     }
     if name.is_empty() {
         name = id.clone();
