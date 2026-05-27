@@ -72,3 +72,12 @@
    - `notify_reasonix_reload` 同步 `process::wait()` → `TokioCommand::output().await`
 3. **前端 IPC 超时保护**：`get_config` 加 3s `Promise.race` 超时降级，初始化异常显示错误骨架屏。
 4. **用户验证冷启动正常秒开**。提交 `e704495`，更新 v0.1.2 Release（EXE 12.2MB + NSIS 2.89MB）。
+
+---
+
+### [2026-05-27 20:00] (北京时间)
+
+**核心变动描述：**
+1. **Time Machine 设置面板格式修复**：修复内联样式使用未定义 CSS 变量 `var(--text-main)` 导致文字不可见；缩短 select 错误提示防止撑破 flex 布局；全部内联样式迁移为独立 CSS 类（`.timeline-section` / `.timeline-row` / `.timeline-select` 等），保证多主题一致性。
+2. **版本 v0.1.3 发布**：版本号从 0.1.1 更新至 0.1.3，cargo tauri build 重新编译打包，GitHub Release 覆盖上架。
+3. **README.md 首页介绍迭代**：更新中英文首页介绍文案，新增冷启动卡死修复、OnceLock 重构等核心亮点说明。
