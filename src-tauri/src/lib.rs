@@ -353,8 +353,13 @@ async fn discover_skills(repo_id: String) -> Result<Vec<SkillMetadata>, String> 
 
     let repo_path = get_repos_cache_path().join(&repo_id);
     if !repo_path.exists() {
-        // Automatically clone if cached folder does not exist yet
-        let _ = git_clone_internal(&repo.url, &repo_path).await;
+        // Automatically clone in background if cached folder does not exist yet to prevent UI freeze
+        let clone_url = repo.url.clone();
+        let dest_path = repo_path.clone();
+        tokio::spawn(async move {
+            let _ = git_clone_internal(&clone_url, &dest_path).await;
+        });
+        return Ok(Vec::new());
     }
 
     let repo_path_clone = repo_path.clone();
@@ -377,10 +382,13 @@ async fn discover_all_skills() -> Result<Vec<SkillMetadata>, String> {
     for repo in config.repositories {
         let repo_path = get_repos_cache_path().join(&repo.id);
         if !repo_path.exists() {
-            // Lazy clone
-            let _ = git_clone_internal(&repo.url, &repo_path).await;
-        }
-        if repo_path.exists() {
+            // Lazy clone in the background - DO NOT await here to avoid blocking application cold start
+            let clone_url = repo.url.clone();
+            let dest_path = repo_path.clone();
+            tokio::spawn(async move {
+                let _ = git_clone_internal(&clone_url, &dest_path).await;
+            });
+        } else {
             repos_to_scan.push((repo_path, repo.id));
         }
     }
