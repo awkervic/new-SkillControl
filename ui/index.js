@@ -644,7 +644,7 @@ dom.btnSaveRepo.addEventListener('click', async () => {
 dom.btnSettings.addEventListener('click', () => {
   dom.modalSettings.classList.add('active');
   // Non-blocking background fetch — settings panel opens instantly
-  dom.backupVersionSelect.innerHTML = '<option value="">正在从云端读取备份列表中...</option>';
+  dom.backupVersionSelect.innerHTML = '<option value="">正在获取云端列表...</option>';
   setTimeout(() => fetchBackupList(), 100); // 100ms delay so the modal renders first
 });
 
@@ -671,7 +671,7 @@ dom.btnSaveSettings.addEventListener('click', async () => {
 async function fetchBackupList() {
   dom.btnFetchBackups.disabled = true;
   dom.btnFetchBackups.textContent = '🔄 正在获取...';
-  dom.backupVersionSelect.innerHTML = '<option value="">正在从云端读取备份列表中...</option>';
+  dom.backupVersionSelect.innerHTML = '<option value="">正在获取云端列表...</option>';
   
   try {
     // 内置 15s 超时保护（由后端 create_webdav_client 保证）
@@ -679,7 +679,7 @@ async function fetchBackupList() {
     dom.backupVersionSelect.innerHTML = '';
     
     if (list.length === 0) {
-      dom.backupVersionSelect.innerHTML = '<option value="">云端 new-SkillControl 文件夹内无历史备份</option>';
+      dom.backupVersionSelect.innerHTML = '<option value="">云端无历史备份</option>';
       dom.btnCloudRestoreVersioned.disabled = true;
     } else {
       list.forEach(item => {
@@ -691,7 +691,7 @@ async function fetchBackupList() {
       dom.btnCloudRestoreVersioned.disabled = false;
     }
   } catch (error) {
-    dom.backupVersionSelect.innerHTML = '<option value="">⚠️ 读取备份列表失败（后端 15s 超时），请验证 WebDAV 配置或网络连接</option>';
+    dom.backupVersionSelect.innerHTML = '<option value="">⚠️ 读取失败（15s超时），请检查 WebDAV 配置</option>';
     console.warn('[SkillControl] WebDAV fetch failed (non-fatal):', error);
   } finally {
     dom.btnFetchBackups.disabled = false;

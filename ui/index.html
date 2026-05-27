@@ -181,13 +181,13 @@
             </button>
           </div>
 
-          <div style="margin-top: 20px; border-top: 1px dashed var(--border-color); padding-top: 15px;">
-            <h4 style="font-size: 13.5px; font-weight: 600; color: var(--text-main); margin-bottom: 10px;">🕒 Time Machine 历史版本恢复</h4>
-            <div style="display: flex; gap: 8px; margin-bottom: 10px;">
-              <select id="backup-version-select" style="flex: 1; padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-main); font-size: 13px;">
-                <option value="">点击右侧按钮获取云端备份列表...</option>
+          <div class="timeline-section">
+            <h4 class="timeline-title">🕒 Time Machine 历史版本恢复</h4>
+            <div class="timeline-row">
+              <select id="backup-version-select" class="timeline-select">
+                <option value="">点击刷新列表获取云端备份...</option>
               </select>
-              <button id="btn-fetch-backups" class="btn btn-secondary" style="padding: 8px 12px; font-size: 13px;">
+              <button id="btn-fetch-backups" class="btn btn-secondary btn-fetch">
                 🔍 刷新列表
               </button>
             </div>
@@ -197,7 +197,7 @@
             </button>
           </div>
 
-          <div class="info-alert" style="margin-top: 15px;">
+          <div class="info-alert info-alert-timeline">
             <strong>💡 温馨提示：</strong> 一键定向还原将自动下载并解包您选中的云端历史备份 ZIP 包，强制覆盖本地当前的 <code>my-brain/</code> 缓存，并全自动为您克隆缺失的 Git 仓库及重新分发物理文件！
           </div>
         </div>
