@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command as TokioCommand;
 use chrono::prelude::*;
-use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
 
@@ -94,18 +93,16 @@ impl Default for AppConfig {
 // Helper functions
 // ==========================================
 
-static APP_DATA_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+static APP_DATA_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 fn get_app_data_path() -> PathBuf {
-    let mut guard = APP_DATA_PATH.lock().unwrap();
-    if let Some(path) = &*guard {
-        return path.clone();
-    }
-    let path = home::home_dir()
-        .map(|p| p.join("AppData").join("Roaming").join("new-SkillControl"))
-        .unwrap_or_else(|| PathBuf::from("C:\\Users\\Default\\AppData\\Roaming\\new-SkillControl"));
-    *guard = Some(path.clone());
-    path
+    APP_DATA_PATH.get_or_init(|| {
+        let p = home::home_dir()
+            .map(|p| p.join("AppData").join("Roaming").join("new-SkillControl"))
+            .unwrap_or_else(|| PathBuf::from("C:\\Users\\Default\\AppData\\Roaming\\new-SkillControl"));
+        println!("DEBUG: [get_app_data_path] initialized -> {:?}", p);
+        p
+    }).clone()
 }
 
 fn get_project_root() -> PathBuf {
@@ -114,19 +111,25 @@ fn get_project_root() -> PathBuf {
 
 fn get_my_brain_path() -> PathBuf {
     let path = get_app_data_path().join("my-brain");
+    println!("DEBUG: [get_my_brain_path] {:?}", path);
     if !path.exists() {
+        println!("DEBUG: [get_my_brain_path] creating directory...");
         let _ = fs::create_dir_all(&path);
     }
     path
 }
 
 fn get_config_path() -> PathBuf {
-    get_my_brain_path().join("config.json")
+    let p = get_my_brain_path().join("config.json");
+    println!("DEBUG: [get_config_path] {:?}", p);
+    p
 }
 
 fn get_repos_cache_path() -> PathBuf {
     let path = get_my_brain_path().join("repos");
+    println!("DEBUG: [get_repos_cache_path] {:?}", path);
     if !path.exists() {
+        println!("DEBUG: [get_repos_cache_path] creating directory...");
         let _ = fs::create_dir_all(&path);
     }
     path
@@ -134,7 +137,9 @@ fn get_repos_cache_path() -> PathBuf {
 
 fn get_staging_path() -> PathBuf {
     let path = get_my_brain_path().join("staging");
+    println!("DEBUG: [get_staging_path] {:?}", path);
     if !path.exists() {
+        println!("DEBUG: [get_staging_path] creating directory...");
         let _ = fs::create_dir_all(&path);
     }
     path
@@ -187,15 +192,21 @@ fn base64_encode(input: &str) -> String {
 // ==========================================
 
 async fn get_config_internal() -> Result<AppConfig, String> {
+    println!("DEBUG: [get_config_internal] START");
     let path = get_config_path();
+    println!("DEBUG: [get_config_internal] path.exists() = {:?}", path.exists());
     if !path.exists() {
+        println!("DEBUG: [get_config_internal] writing default config...");
         let default_config = AppConfig::default();
         let data = serde_json::to_string_pretty(&default_config).map_err(|e| e.to_string())?;
         tokio::fs::write(&path, data).await.map_err(|e| e.to_string())?;
+        println!("DEBUG: [get_config_internal] default config written");
         return Ok(default_config);
     }
+    println!("DEBUG: [get_config_internal] reading config file...");
     let content = tokio::fs::read_to_string(&path).await.map_err(|e| e.to_string())?;
     let config: AppConfig = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    println!("DEBUG: [get_config_internal] OK (theme={}, repos={})", config.theme, config.repositories.len());
     Ok(config)
 }
 
@@ -396,22 +407,25 @@ async fn discover_skills(repo_id: String) -> Result<Vec<SkillMetadata>, String> 
 
 #[tauri::command]
 async fn discover_all_skills() -> Result<Vec<SkillMetadata>, String> {
+    println!("DEBUG: [discover_all_skills] START");
     let config = get_config_internal().await?;
     let mut repos_to_scan = Vec::new();
-    for repo in config.repositories {
+    for repo in &config.repositories {
         let repo_path = get_repos_cache_path().join(&repo.id);
+        println!("DEBUG: [discover_all_skills] repo={} exists={}", repo.name, repo_path.exists());
         if !repo_path.exists() {
-            // Lazy clone in the background - DO NOT await here to avoid blocking application cold start
             let clone_url = repo.url.clone();
             let dest_path = repo_path.clone();
+            println!("DEBUG: [discover_all_skills] spawning bg clone for {}", repo.name);
             tokio::spawn(async move {
                 let _ = git_clone_internal(&clone_url, &dest_path).await;
             });
         } else {
-            repos_to_scan.push((repo_path, repo.id));
+            repos_to_scan.push((repo_path, repo.id.clone()));
         }
     }
 
+    println!("DEBUG: [discover_all_skills] scanning {} repos", repos_to_scan.len());
     let all_skills = tokio::task::spawn_blocking(move || {
         let mut skills = Vec::new();
         for (repo_path, repo_id) in repos_to_scan {
@@ -419,7 +433,8 @@ async fn discover_all_skills() -> Result<Vec<SkillMetadata>, String> {
         }
         skills
     }).await.map_err(|e| e.to_string())?;
-
+    
+    println!("DEBUG: [discover_all_skills] complete, {} skills found", all_skills.len());
     Ok(all_skills)
 }
 
@@ -787,9 +802,12 @@ async fn sync_physical_distributions_for_skill(skill_id: &str, config: &AppConfi
     let skill_name_clone = skill_id.to_string();
     let enable_agy = skill_status.enable_agy;
     let scope_clone = scope.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        let _ = sync_agy_config_json(&skill_id_clone, &skill_name_clone, enable_agy, &scope_clone);
-    }).await;
+    // Fire-and-forget: NEVER await blocking tasks on the async runtime
+    tokio::spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = sync_agy_config_json(&skill_id_clone, &skill_name_clone, enable_agy, &scope_clone);
+        }).await;
+    });
 
     Ok(())
 }
@@ -896,11 +914,14 @@ async fn remove_physical_distribution(skill_id: &str) -> Result<(), String> {
     let skill_id_clone1 = skill_id.to_string();
     let skill_id_clone2 = skill_id.to_string();
     let skill_id_clone3 = skill_id.to_string();
-    let _ = tokio::task::spawn_blocking(move || {
-        let _ = sync_agy_config_json(&skill_id_clone1, &skill_id_clone1, false, "global");
-        let _ = sync_agy_config_json(&skill_id_clone2, &skill_id_clone2, false, "project");
-        let _ = sync_agy_config_json(&skill_id_clone3, &skill_id_clone3, false, "shared");
-    }).await;
+    // Fire-and-forget: NEVER await blocking tasks on the async runtime
+    tokio::spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = sync_agy_config_json(&skill_id_clone1, &skill_id_clone1, false, "global");
+            let _ = sync_agy_config_json(&skill_id_clone2, &skill_id_clone2, false, "project");
+            let _ = sync_agy_config_json(&skill_id_clone3, &skill_id_clone3, false, "shared");
+        }).await;
+    });
 
     Ok(())
 }
@@ -908,15 +929,20 @@ async fn remove_physical_distribution(skill_id: &str) -> Result<(), String> {
 /// Called on app startup from JS loadApp().
 #[tauri::command]
 async fn startup_sync_distributions() -> Result<(), String> {
+    println!("DEBUG: [startup_sync_distributions] START");
     let config = get_config_internal().await?;
+    println!("DEBUG: [startup_sync_distributions] {} skills in status", config.skills_status.len());
     let mut errors: Vec<String> = Vec::new();
 
     for (skill_id, status) in &config.skills_status {
         if status.enable_agy || status.enable_reasonix {
             let staging_file = get_staging_path().join(format!("{}.md", skill_id));
+            println!("DEBUG: [startup_sync_distributions] skill={} staging_exists={}", skill_id, staging_file.exists());
             if staging_file.exists() {
+                println!("DEBUG: [startup_sync_distributions] syncing skill {}...", skill_id);
                 if let Err(e) = sync_physical_distributions_for_skill(skill_id, &config).await {
                     errors.push(format!("{}: {}", skill_id, e));
+                    println!("DEBUG: [startup_sync_distributions] skill {} error: {}", skill_id, e);
                 }
             }
         }
@@ -1331,6 +1357,8 @@ async fn trigger_restore_version(filename: String) -> Result<AppConfig, String> 
 // ==========================================
 
 /// Notify Reasonix to reload its playbooks index.
+/// WARNING: This command blocks the tokio runtime with synchronous process::wait().
+/// It is NOT called on cold start, but is included here for completeness.
 #[tauri::command]
 async fn notify_reasonix_reload() -> Result<String, String> {
     let commands: [(&str, &[&str]); 3] = [
@@ -1339,33 +1367,30 @@ async fn notify_reasonix_reload() -> Result<String, String> {
         ("npx",      &["reasonix", "/playbooks"]),
     ];
 
-    let mut last_err = String::new();
     for (cmd, args) in &commands {
-        let mut child = match std::process::Command::new(cmd)
+        let result = TokioCommand::new(cmd)
             .args(*args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                last_err = format!("{}: {}", cmd, e);
-                continue;
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+
+        match result {
+            Ok(_) => {
+                return Ok(format!(
+                    "Reasonix notified via `{} {}`",
+                    cmd,
+                    args.join(" ")
+                ));
             }
-        };
-
-        let _ = child.wait();
-
-        return Ok(format!(
-            "Reasonix notified via `{} {}`",
-            cmd,
-            args.join(" ")
-        ));
+            Err(e) => {
+                println!("DEBUG: [notify_reasonix_reload] {} failed: {}", cmd, e);
+            }
+        }
     }
 
     Err(format!(
-        "Could not reach Reasonix (all methods failed: {})",
-        last_err
+        "Could not reach Reasonix (all methods failed)"
     ))
 }
 
@@ -1400,14 +1425,12 @@ pub fn run() {
                 })
             });
             // Force the exact requested path: C:\Users\<username>\AppData\Roaming\new-SkillControl
-            let target_path = home::home_dir()
+            let _target_path = home::home_dir()
                 .map(|p| p.join("AppData").join("Roaming").join("new-SkillControl"))
                 .unwrap_or(path);
 
-            let mut guard = APP_DATA_PATH.lock().unwrap();
-            *guard = Some(target_path);
-
             // Ensure cold start folders exist
+            // NOTE: OnceLock is initialized lazily by the first call to get_app_data_path()
             let app_data = get_app_data_path();
             let my_brain = app_data.join("my-brain");
             if !my_brain.exists() {

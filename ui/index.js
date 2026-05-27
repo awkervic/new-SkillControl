@@ -76,8 +76,13 @@ function showToast(message, type = 'success') {
 
 async function loadApp() {
   try {
-    // === Phase 1: 本地配置读取（瞬间完成，本地文件 I/O）===
-    state.config = await invoke('get_config');
+    // === Phase 1: 本地配置读取 — 带 3 秒超时保护 ===
+    // 如果 get_config 卡死，自动使用默认配置让界面先亮起来
+    const configOrTimeout = await Promise.race([
+      invoke('get_config'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('get_config timeout after 3s')), 3000))
+    ]);
+    state.config = configOrTimeout;
     
     // Set persisted theme
     document.documentElement.setAttribute('data-theme', state.config.theme);
@@ -125,7 +130,16 @@ async function loadApp() {
       console.warn('[SkillControl] Startup sync partial error (non-fatal):', err);
     });
   } catch (error) {
-    showToast(`初始化失败: ${error}`, 'danger');
+    console.error('[SkillControl] 初始化失败:', error);
+    // 即使初始化失败也显示基本骨架，不让界面完全白屏
+    dom.skillsGrid.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:60px 0;width:100%;grid-column:1/-1;">
+        <span style="font-size:40px;">⚠️</span>
+        <span style="color:var(--text-secondary);font-size:13px;">初始化异常: ${error}，请重启软件</span>
+      </div>
+    `;
+    dom.skillsGrid.style.display = 'flex';
+    dom.emptyState.style.display = 'none';
   }
 }
 
