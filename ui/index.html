@@ -175,13 +175,30 @@
               <svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M12 5l-4 4m4-4l4 4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
               立刻压缩备份到云端
             </button>
-            <button id="btn-cloud-restore" class="btn btn-danger btn-block">
+            <button id="btn-cloud-restore" class="btn btn-danger btn-block" style="display: none;">
               <svg class="icon" viewBox="0 0 24 24"><path d="M12 19V5M12 19l-4-4m4 4l4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
               从云端拉取一键复活工作流
             </button>
           </div>
-          <div class="info-alert">
-            <strong>💡 温馨提示：</strong> 一键复活将自动拉取保存在 WebDAV 云端的 <code>config_backup.zip</code>，恢复配置文件，并全自动为您在新设备上重新克隆 Git 仓库及分发物理文件！
+
+          <div style="margin-top: 20px; border-top: 1px dashed var(--border-color); padding-top: 15px;">
+            <h4 style="font-size: 13.5px; font-weight: 600; color: var(--text-main); margin-bottom: 10px;">🕒 Time Machine 历史版本恢复</h4>
+            <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+              <select id="backup-version-select" style="flex: 1; padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-main); font-size: 13px;">
+                <option value="">点击右侧按钮获取云端备份列表...</option>
+              </select>
+              <button id="btn-fetch-backups" class="btn btn-secondary" style="padding: 8px 12px; font-size: 13px;">
+                🔍 刷新列表
+              </button>
+            </div>
+            <button id="btn-cloud-restore-versioned" class="btn btn-danger btn-block" disabled>
+              <svg class="icon" viewBox="0 0 24 24"><path d="M12 19V5M12 19l-4-4m4 4l4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+              确认定向还原选中版本
+            </button>
+          </div>
+
+          <div class="info-alert" style="margin-top: 15px;">
+            <strong>💡 温馨提示：</strong> 一键定向还原将自动下载并解包您选中的云端历史备份 ZIP 包，强制覆盖本地当前的 <code>my-brain/</code> 缓存，并全自动为您克隆缺失的 Git 仓库及重新分发物理文件！
           </div>
         </div>
       </div>

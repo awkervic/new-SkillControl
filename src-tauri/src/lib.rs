@@ -5,6 +5,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command as TokioCommand;
+use chrono::prelude::*;
+use std::sync::Mutex;
+use tauri::Manager;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -90,12 +93,26 @@ impl Default for AppConfig {
 // Helper functions
 // ==========================================
 
+static APP_DATA_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn get_app_data_path() -> PathBuf {
+    let mut guard = APP_DATA_PATH.lock().unwrap();
+    if let Some(path) = &*guard {
+        return path.clone();
+    }
+    let path = home::home_dir()
+        .map(|p| p.join("AppData").join("Roaming").join("new-SkillControl"))
+        .unwrap_or_else(|| PathBuf::from("C:\\Users\\Default\\AppData\\Roaming\\new-SkillControl"));
+    *guard = Some(path.clone());
+    path
+}
+
 fn get_project_root() -> PathBuf {
     PathBuf::from("D:\\123123123123\\new-SkillControl")
 }
 
 fn get_my_brain_path() -> PathBuf {
-    let path = get_project_root().join("my-brain");
+    let path = get_app_data_path().join("my-brain");
     if !path.exists() {
         let _ = fs::create_dir_all(&path);
     }
@@ -751,12 +768,6 @@ async fn sync_physical_distributions_for_skill(skill_id: &str, config: &AppConfi
 }
 
 /// Ensures the markdown content has a Reasonix-compatible frontmatter with `name:` field.
-/// Reasonix scans playbooks by looking for `name:` in YAML frontmatter.
-/// If the file uses `id:` but no `name:`, we inject a proper `name:` field.
-/// Reasonix 官方规范 Frontmatter —— 强制焊入标准头部
-/// Reasonix 识别剧本的唯一依据是文件顶部的 YAML 前导符。
-/// 无论原文件是否有 Frontmatter，我们都将其全部替换为官方指定格式。
-/// 原始 Body（前导符之后的内容）保留不变。
 fn normalize_for_reasonix(skill_id: &str, content: &str) -> String {
     let description = extract_frontmatter_value(content, "description");
     let desc_str = if !description.is_empty() {
@@ -765,7 +776,6 @@ fn normalize_for_reasonix(skill_id: &str, content: &str) -> String {
         format!("AI Agent skill: {}", skill_id)
     };
 
-    // 官方标准 Frontmatter
     let frontmatter = format!(
         concat!(
             "---\n",
@@ -780,7 +790,6 @@ fn normalize_for_reasonix(skill_id: &str, content: &str) -> String {
         skill_id, desc_str
     );
 
-    // 剥离原 Frontmatter，仅保留 Body
     let body = if content.starts_with("---") {
         let parts: Vec<&str> = content.splitn(3, "---").collect();
         if parts.len() >= 3 { parts[2].trim() } else { content.trim() }
@@ -815,7 +824,6 @@ async fn remove_physical_distribution(skill_id: &str) -> Result<(), String> {
         .ok_or_else(|| "Could not determine user home directory".to_string())?;
     let project_root = get_project_root();
 
-    // 无论什么 Scope 都擦除 —— 不放过任何一个残留
     // Clean Reasonix files
     let reasonix_paths = [
         PathBuf::from(format!("C:\\Users\\{}\\.reasonix\\skills\\{}.md", username, skill_id)),
@@ -871,16 +879,12 @@ async fn remove_physical_distribution(skill_id: &str) -> Result<(), String> {
 }
 
 /// Called on app startup from JS loadApp().
-/// Re-syncs all enabled skills to their physical destinations.
-/// This ensures that after a restart, .reasonix/playbooks/shared/ and .gemini/skills/shared/
-/// are always up-to-date with the current config state.
 #[tauri::command]
 async fn startup_sync_distributions() -> Result<(), String> {
     let config = get_config_internal().await?;
     let mut errors: Vec<String> = Vec::new();
 
     for (skill_id, status) in &config.skills_status {
-        // Only sync skills that have at least one distribution enabled
         if status.enable_agy || status.enable_reasonix {
             let staging_file = get_staging_path().join(format!("{}.md", skill_id));
             if staging_file.exists() {
@@ -888,15 +892,12 @@ async fn startup_sync_distributions() -> Result<(), String> {
                     errors.push(format!("{}: {}", skill_id, e));
                 }
             }
-            // If staging file doesn't exist but is_enabled, silently skip
-            // (user hasn't downloaded it yet, or it was cleaned up)
         }
     }
 
     if errors.is_empty() {
         Ok(())
     } else {
-        // Non-fatal: report what failed but don't block app startup
         Err(format!("Partial sync errors: {}", errors.join("; ")))
     }
 }
@@ -931,39 +932,79 @@ async fn sync_skill_now(skill_id: String, repo_id: String, relative_path: String
 // 6. WebDAV Backup & Clouds Resurrect
 // ==========================================
 
-async fn backup_to_webdav_internal(config: &AppConfig) -> Result<(), String> {
+fn zip_my_brain(zip_file_path: &Path, my_brain_path: &Path) -> Result<(), String> {
+    let file = File::create(zip_file_path).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    for entry in walkdir::WalkDir::new(my_brain_path) {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        
+        // Skip the repos cache folder and the target zip file itself!
+        if path.starts_with(my_brain_path.join("repos")) || path == zip_file_path {
+            continue;
+        }
+
+        let name = path.strip_prefix(my_brain_path)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .into_owned();
+
+        if path.is_file() {
+            zip.start_file(name.replace('\\', "/"), options).map_err(|e| e.to_string())?;
+            let mut f = File::open(path).map_err(|e| e.to_string())?;
+            let mut buffer = Vec::new();
+            f.read_to_end(&mut buffer).map_err(|e| e.to_string())?;
+            zip.write_all(&buffer).map_err(|e| e.to_string())?;
+        } else if !name.is_empty() {
+            zip.add_directory(name.replace('\\', "/"), options).map_err(|e| e.to_string())?;
+        }
+    }
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn backup_to_webdav_internal(config: &AppConfig) -> Result<String, String> {
     let config_file = get_config_path();
     if !config_file.exists() {
         return Err("config.json not found".to_string());
     }
 
-    let backup_zip_path = get_my_brain_path().join("config_backup.zip");
+    // Standard zip archive path (temporary location)
+    let backup_zip_path = get_my_brain_path().join("config_backup_temp.zip");
+    zip_my_brain(&backup_zip_path, &get_my_brain_path())?;
 
-    // Zip config.json
-    let file = File::create(&backup_zip_path).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    
-    zip.start_file("config.json", options).map_err(|e| e.to_string())?;
-    let config_data = fs::read(&config_file).map_err(|e| e.to_string())?;
-    zip.write_all(&config_data).map_err(|e| e.to_string())?;
-    zip.finish().map_err(|e| e.to_string())?;
-
-    // Upload ZIP via HTTP PUT using reqwest
-    let mut url = config.webdav.url.clone();
-    if !url.ends_with('/') {
-        url.push('/');
-    }
-    url.push_str("config_backup.zip");
-
+    // Create client & authorization header
     let client = reqwest::Client::new();
     let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
 
-    let zip_bytes = fs::read(&backup_zip_path).map_err(|e| e.to_string())?;
+    // 1. Create or verify dedicated 'new-SkillControl' WebDAV directory via MKCOL
+    let mut folder_url = config.webdav.url.clone();
+    if !folder_url.ends_with('/') {
+        folder_url.push('/');
+    }
+    folder_url.push_str("new-SkillControl/");
 
-    let response = client.put(&url)
-        .header("Authorization", auth_header)
+    let _mkcol_res = client.request(reqwest::Method::from_bytes(b"MKCOL").unwrap(), &folder_url)
+        .header("Authorization", &auth_header)
+        .send()
+        .await;
+
+    // 2. Generate chronological backup name: backup-YYYY-M-D-H-Min-S.zip
+    let now = chrono::Local::now();
+    let filename = format!("backup-{}-{}-{}-{}-{}-{}.zip", 
+        now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+
+    let mut upload_url = folder_url;
+    upload_url.push_str(&filename);
+
+    let zip_bytes = fs::read(&backup_zip_path).map_err(|e| e.to_string())?;
+    let _ = fs::remove_file(&backup_zip_path); // clean up temp zip file
+
+    let response = client.put(&upload_url)
+        .header("Authorization", &auth_header)
         .header("Content-Type", "application/zip")
         .body(zip_bytes)
         .send()
@@ -971,7 +1012,7 @@ async fn backup_to_webdav_internal(config: &AppConfig) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     if response.status().is_success() {
-        Ok(())
+        Ok(filename)
     } else {
         Err(format!("WebDAV backup failed with status: {}", response.status()))
     }
@@ -980,12 +1021,13 @@ async fn backup_to_webdav_internal(config: &AppConfig) -> Result<(), String> {
 #[tauri::command]
 async fn trigger_backup() -> Result<String, String> {
     let config = get_config_internal().await?;
-    backup_to_webdav_internal(&config).await?;
-    Ok("Backup uploaded successfully!".to_string())
+    let filename = backup_to_webdav_internal(&config).await?;
+    Ok(format!("备份成功！已打包并上传至云端文件：{}", filename))
 }
 
 #[tauri::command]
 async fn trigger_resurrect() -> Result<AppConfig, String> {
+    // Legacy generic resurrection for compatibility, downloads standard config_backup.zip from root
     let config = get_config_internal().await?;
     
     let mut url = config.webdav.url.clone();
@@ -999,7 +1041,7 @@ async fn trigger_resurrect() -> Result<AppConfig, String> {
 
     // 1. Download Backup ZIP
     let response = client.get(&url)
-        .header("Authorization", auth_header)
+        .header("Authorization", &auth_header)
         .send()
         .await
         .map_err(|e| format!("Failed to download backup: {}", e))?;
@@ -1071,22 +1113,199 @@ async fn trigger_resurrect() -> Result<AppConfig, String> {
     Ok(recovered_config)
 }
 
+#[tauri::command]
+async fn get_backup_list() -> Result<Vec<HashMap<String, String>>, String> {
+    let config = get_config_internal().await?;
+    let mut url = config.webdav.url.clone();
+    if !url.ends_with('/') {
+        url.push('/');
+    }
+    url.push_str("new-SkillControl/");
+
+    let client = reqwest::Client::new();
+    let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
+
+    // Send PROPFIND
+    let response = client.request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
+        .header("Authorization", &auth_header)
+        .header("Depth", "1")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to WebDAV: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("WebDAV returned status: {}", response.status()));
+    }
+
+    let text = response.text().await.map_err(|e| e.to_string())?;
+    
+    // Scan WebDAV PROPFIND hrefs matching backup-*.zip
+    let mut backups = Vec::new();
+    let mut search_str = &text[..];
+    while let Some(start_idx) = search_str.find("backup-") {
+        let rest = &search_str[start_idx..];
+        if let Some(end_idx) = rest.find(".zip") {
+            let filename = &rest[..end_idx + 4];
+            if filename.chars().all(|c| c.is_numeric() || c == '-' || c == '.' || c == 'b' || c == 'a' || c == 'c' || c == 'k' || c == 'u' || c == 'p' || c == 'z' || c == 'i') {
+                if !backups.contains(&filename.to_string()) {
+                    backups.push(filename.to_string());
+                }
+            }
+            search_str = &rest[end_idx + 4..];
+        } else {
+            break;
+        }
+    }
+
+    // Parse backup filenames to ensure correct descending sorting chronological sort
+    let mut parsed_backups: Vec<(Vec<u32>, String)> = backups.into_iter().filter_map(|name| {
+        let parts_str = name.strip_prefix("backup-")?.strip_suffix(".zip")?;
+        let parts: Vec<u32> = parts_str.split('-').filter_map(|p| p.parse::<u32>().ok()).collect();
+        if parts.len() >= 6 {
+            Some((parts, name))
+        } else {
+            None
+        }
+    }).collect();
+
+    parsed_backups.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let result = parsed_backups.into_iter().map(|(parts, name)| {
+        let mut map = HashMap::new();
+        map.insert("filename".to_string(), name);
+        let formatted = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} 备份版本", 
+            parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]);
+        map.insert("display".to_string(), formatted);
+        map
+    }).collect();
+
+    Ok(result)
+}
+
+#[tauri::command]
+async fn trigger_restore_version(filename: String) -> Result<AppConfig, String> {
+    let config = get_config_internal().await?;
+    
+    let mut url = config.webdav.url.clone();
+    if !url.ends_with('/') {
+        url.push('/');
+    }
+    url.push_str("new-SkillControl/");
+    url.push_str(&filename);
+
+    let client = reqwest::Client::new();
+    let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
+
+    // 1. Download Backup ZIP
+    let response = client.get(&url)
+        .header("Authorization", &auth_header)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download backup: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Download failed. WebDAV server returned: {}", response.status()));
+    }
+
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    let my_brain_path = get_my_brain_path();
+    let zip_path = my_brain_path.join("downloaded_backup_temp.zip");
+    fs::write(&zip_path, bytes).map_err(|e| e.to_string())?;
+
+    // 2. Wipe config.json, staging folder, and repos cache folder
+    let config_path = get_config_path();
+    if config_path.exists() {
+        let _ = fs::remove_file(&config_path);
+    }
+    let staging_path = get_staging_path();
+    if staging_path.exists() {
+        let _ = fs::remove_dir_all(&staging_path);
+    }
+    let repos_path = get_repos_cache_path();
+    if repos_path.exists() {
+        let _ = fs::remove_dir_all(&repos_path);
+    }
+
+    // Recreate clean folders
+    let _ = fs::create_dir_all(&staging_path);
+    let _ = fs::create_dir_all(&repos_path);
+
+    // 3. Unzip files back into my-brain folder
+    {
+        let file = File::open(&zip_path).map_err(|e| e.to_string())?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+            let enclosed = file.enclosed_name();
+            let outpath = match enclosed {
+                Some(path) => my_brain_path.join(path),
+                None => continue,
+            };
+
+            if file.name().ends_with('/') {
+                fs::create_dir_all(&outpath).map_err(|e| e.to_string())?;
+            } else {
+                if let Some(p) = outpath.parent() {
+                    if !p.exists() {
+                        fs::create_dir_all(p).map_err(|e| e.to_string())?;
+                    }
+                }
+                let mut outfile = File::create(&outpath).map_err(|e| e.to_string())?;
+                std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    let _ = fs::remove_file(&zip_path);
+
+    // 4. Load the recovered config
+    let recovered_contents = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let recovered_config: AppConfig = serde_json::from_str(&recovered_contents).map_err(|e| e.to_string())?;
+
+    // 5. Re-clone all configured Git repositories
+    for repo in &recovered_config.repositories {
+        let repo_path = get_repos_cache_path().join(&repo.id);
+        if !repo_path.exists() {
+            let _ = git_clone_internal(&repo.url, &repo_path).await;
+        }
+    }
+
+    // 6. Redistribute active skills
+    for (skill_id, _status) in &recovered_config.skills_status {
+        let staging_file = get_staging_path().join(format!("{}.md", skill_id));
+        if !staging_file.exists() {
+            let mut found_path = None;
+            for repo in &recovered_config.repositories {
+                let repo_path = get_repos_cache_path().join(&repo.id);
+                if repo_path.exists() {
+                    let mut skills_list = Vec::new();
+                    scan_directory_for_skills(&repo_path, &repo.id, &mut skills_list);
+                    if let Some(matched) = skills_list.iter().find(|s| s.id == *skill_id) {
+                        found_path = Some(repo_path.join(&matched.relative_path));
+                        break;
+                    }
+                }
+            }
+            if let Some(src) = found_path {
+                let _ = tokio::fs::copy(&src, &staging_file).await;
+            }
+        }
+
+        if staging_file.exists() {
+            let _ = sync_physical_distributions_for_skill(skill_id, &recovered_config).await;
+        }
+    }
+
+    Ok(recovered_config)
+}
+
 // ==========================================
 // 6b. Reasonix Reload Notification
 // ==========================================
 
 /// Notify Reasonix to reload its playbooks index.
-/// After distributing/removing a `.md` playbook file, call this to force
-/// Reasonix to re-scan its `playbooks/shared/` directory and rebuild its
-/// in-memory cache — otherwise the new playbook stays invisible until the
-/// next Reasonix session restart.
 #[tauri::command]
 async fn notify_reasonix_reload() -> Result<String, String> {
-    // Attempt multiple strategies to wake up Reasonix:
-    // 1. Try running `reasonix /playbooks` which triggers a reload
-    // 2. Fallback: try `reasonix --reload-skills`
-    // 3. Silent fail if Reasonix isn't installed or not running
-
     let commands: [(&str, &[&str]); 3] = [
         ("reasonix", &["/playbooks"]),
         ("reasonix", &["/skills"]),
@@ -1108,7 +1327,6 @@ async fn notify_reasonix_reload() -> Result<String, String> {
             }
         };
 
-        // Give it a short timeout
         let _ = child.wait();
 
         return Ok(format!(
@@ -1118,10 +1336,8 @@ async fn notify_reasonix_reload() -> Result<String, String> {
         ));
     }
 
-    // If we get here, none of the commands worked
-    // This is non-fatal — Reasonix may not be installed
     Err(format!(
-        "Could not reach Reasonix (all methods failed: {}) — skill file was written, but you may need to restart Reasonix manually.",
+        "Could not reach Reasonix (all methods failed: {})",
         last_err
     ))
 }
@@ -1132,10 +1348,8 @@ async fn notify_reasonix_reload() -> Result<String, String> {
 
 #[tauri::command]
 async fn uninstall_skill(skill_id: String) -> Result<AppConfig, String> {
-    // 1. Physically remove staging files and all distributed locations
     remove_physical_distribution(&skill_id).await?;
 
-    // 2. Remove the skill status key from config.json
     let mut config = get_config_internal().await?;
     config.skills_status.remove(&skill_id);
     save_config(config.clone()).await?;
@@ -1150,6 +1364,37 @@ async fn uninstall_skill(skill_id: String) -> Result<AppConfig, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            let path = app.path().app_data_dir().unwrap_or_else(|_| {
+                app.path().app_config_dir().unwrap_or_else(|_| {
+                    home::home_dir()
+                        .map(|p| p.join("AppData").join("Roaming").join("new-SkillControl"))
+                        .unwrap()
+                })
+            });
+            // Force the exact requested path: C:\Users\<username>\AppData\Roaming\new-SkillControl
+            let target_path = home::home_dir()
+                .map(|p| p.join("AppData").join("Roaming").join("new-SkillControl"))
+                .unwrap_or(path);
+
+            let mut guard = APP_DATA_PATH.lock().unwrap();
+            *guard = Some(target_path);
+
+            // Ensure cold start folders exist
+            let app_data = get_app_data_path();
+            let my_brain = app_data.join("my-brain");
+            if !my_brain.exists() {
+                let _ = fs::create_dir_all(&my_brain);
+            }
+            let config_path = my_brain.join("config.json");
+            if !config_path.exists() {
+                let default_config = AppConfig::default();
+                if let Ok(data) = serde_json::to_string_pretty(&default_config) {
+                    let _ = fs::write(&config_path, data);
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
@@ -1167,6 +1412,8 @@ pub fn run() {
             notify_reasonix_reload,
             trigger_backup,
             trigger_resurrect,
+            get_backup_list,
+            trigger_restore_version,
             uninstall_skill
         ])
         .run(tauri::generate_context!())

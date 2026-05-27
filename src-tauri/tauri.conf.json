@@ -30,6 +30,11 @@
       "icons/128x128.png",
       "icons/icon.png",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "uninstall.nsh"
+      }
+    }
   }
 }

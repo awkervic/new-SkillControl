@@ -46,7 +46,10 @@ const dom = {
   webdavAutoBackup: document.getElementById('webdav-auto-backup'),
   
   btnCloudBackup: document.getElementById('btn-cloud-backup'),
-  btnCloudRestore: document.getElementById('btn-cloud-restore')
+  btnCloudRestore: document.getElementById('btn-cloud-restore'),
+  backupVersionSelect: document.getElementById('backup-version-select'),
+  btnFetchBackups: document.getElementById('btn-fetch-backups'),
+  btnCloudRestoreVersioned: document.getElementById('btn-cloud-restore-versioned')
 };
 
 // ==========================================================================
@@ -603,6 +606,7 @@ dom.btnSaveRepo.addEventListener('click', async () => {
 // --- Modal Settings & Backup Controllers ---
 dom.btnSettings.addEventListener('click', () => {
   dom.modalSettings.classList.add('active');
+  fetchBackupList(); // auto-fetch on open
 });
 
 dom.modalSettings.querySelector('.btn-close-modal').addEventListener('click', () => {
@@ -624,6 +628,43 @@ dom.btnSaveSettings.addEventListener('click', async () => {
   }
 });
 
+// Fetch Backups from WebDAV
+async function fetchBackupList() {
+  dom.btnFetchBackups.disabled = true;
+  dom.btnFetchBackups.textContent = '🔄 正在获取...';
+  dom.backupVersionSelect.innerHTML = '<option value="">正在从云端读取备份列表中...</option>';
+  
+  try {
+    const list = await invoke('get_backup_list');
+    dom.backupVersionSelect.innerHTML = '';
+    
+    if (list.length === 0) {
+      dom.backupVersionSelect.innerHTML = '<option value="">云端 new-SkillControl 文件夹内无历史备份</option>';
+      dom.btnCloudRestoreVersioned.disabled = true;
+    } else {
+      list.forEach(item => {
+        const option = document.createElement('option');
+        option.value = item.filename;
+        option.textContent = item.display;
+        dom.backupVersionSelect.appendChild(option);
+      });
+      dom.btnCloudRestoreVersioned.disabled = false;
+    }
+  } catch (error) {
+    dom.backupVersionSelect.innerHTML = '<option value="">读取备份列表失败，请先验证 WebDAV 配置</option>';
+    console.error(error);
+  } finally {
+    dom.btnFetchBackups.disabled = false;
+    dom.btnFetchBackups.textContent = '🔍 刷新列表';
+  }
+}
+
+dom.btnFetchBackups.addEventListener('click', fetchBackupList);
+
+dom.backupVersionSelect.addEventListener('change', () => {
+  dom.btnCloudRestoreVersioned.disabled = !dom.backupVersionSelect.value;
+});
+
 // WebDAV Cloud Backup Trigger
 dom.btnCloudBackup.addEventListener('click', async () => {
   dom.btnCloudBackup.disabled = true;
@@ -632,6 +673,8 @@ dom.btnCloudBackup.addEventListener('click', async () => {
   try {
     const res = await invoke('trigger_backup');
     showToast(res);
+    // Refresh the list immediately after successful backup
+    await fetchBackupList();
   } catch (error) {
     showToast(`备份失败: ${error}`, 'danger');
   } finally {
@@ -656,6 +699,34 @@ dom.btnCloudRestore.addEventListener('click', async () => {
     } finally {
       dom.btnCloudRestore.disabled = false;
       dom.btnCloudRestore.textContent = '从云端拉取一键复活工作流';
+    }
+  }
+});
+
+// WebDAV Versioned Time Machine Restore Trigger
+dom.btnCloudRestoreVersioned.addEventListener('click', async () => {
+  const filename = dom.backupVersionSelect.value;
+  if (!filename) return;
+  
+  const text = dom.backupVersionSelect.options[dom.backupVersionSelect.selectedIndex].text;
+  if (confirm(`警告：确认恢复到选中的历史版本：[${text}] 吗？\n这将清空当前的 AppData 数据目录并全量拉取还原，随后自动重新组装和克隆所有 Git 技能仓库！`)) {
+    dom.btnCloudRestoreVersioned.disabled = true;
+    dom.backupVersionSelect.disabled = true;
+    dom.btnFetchBackups.disabled = true;
+    dom.btnCloudRestoreVersioned.textContent = '🌀 Time Machine 正在定点复活并拉取中...';
+    
+    try {
+      state.config = await invoke('trigger_restore_version', { filename });
+      showToast(`🎉 成功！Time Machine 备份版本 [${text}] 已经在本地完美定点复活还原！`);
+      dom.modalSettings.classList.remove('active');
+      await loadApp();
+    } catch (error) {
+      showToast(`还原失败: ${error}`, 'danger');
+    } finally {
+      dom.btnCloudRestoreVersioned.disabled = false;
+      dom.backupVersionSelect.disabled = false;
+      dom.btnFetchBackups.disabled = false;
+      dom.btnCloudRestoreVersioned.textContent = '确认定向还原选中版本';
     }
   }
 });

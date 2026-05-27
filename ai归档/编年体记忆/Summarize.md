@@ -51,3 +51,19 @@
 3. **全平台全尺寸顶级图标包与 build.rs 自愈编译构建**：
    - 上线并打包了覆盖多平台的全套高品质自定义图标包（包含 Windows 256x256 `.ico`、macOS App Icon `.icns`、Android 各种分辨率 mipmap 资源及 iOS 高保真规格图标）。
    - 全面升级 `build.rs` 资源打包编译防御逻辑，在 Rust 编译阶段自动识别、校验并重新构建微软 `RC.EXE` 专属标准图标资源，实现极强的自动防御与编译阶段纠错机制，为多重格式安装包的跨平台分发打下坚实底层。
+
+---
+
+### [2026-05-27 18:00] (北京时间)
+
+**核心变动描述：**
+1. **数据物理存储大迁移与完美卸载物理粉碎**：
+   - 彻底废弃当前源码目录下的相对路径暂存，通过 Tauri v2 API 全面迁移数据至标准的 Windows 用户漫游目录：`AppData/Roaming/new-SkillControl/`，开机冷启动自动检测初始化该目录下的 `my-brain` 子目录与 `config.json` 基础白箱账本。
+   - 在 `tauri.conf.json` 中配置 `installerHooks: "uninstall.nsh"` 挂载 NSIS 卸载钩子，用户卸载软件时自动物理粉碎该漫游目录，实现完美的 100% 零残留物理卸载。
+2. **WebDAV 隔离云端时间戳多版本增量备份**：
+   - 每次备份前自动通过 WebDAV `MKCOL` 协议创建专用隔离文件夹 `new-SkillControl`。
+   - 将 `config.json` 和 `my-brain/`（自动过滤排除庞大的 Git `repos` 缓存以极致精简包体体积）整体进行配置和基础索引 ZIP 压缩，并提取当前系统时钟进行动态命名：`backup-YYYY-M-D-H-Min-S.zip`（如 `backup-2026-5-27-18-00-00.zip`），物理上传至网盘隔离路径。
+3. **Time Machine 历史版本恢复时间轴选择器**：
+   - 后端通过 `PROPFIND` 命令实现对云端 `backup-*.zip` 备份地标的扫描与抓取，自动解析时间戳并由新到旧进行精确的 chronological 倒序排列。
+   - 前端重构设置面板中的云端备份与恢复区，融入优雅的历史版本 Dropdown 下拉看盘选择框与刷新按钮（Time Machine UI），在用户打开设置面板时进行无感后台自动读取。
+   - 选中特定时间戳地标后触发“一键定向定点复活”：后端异步下载对应版本的云端 ZIP，物理抹除并清空当前 `AppData/Roaming/new-SkillControl` 目录，全量解压解包还原。随后全自动在新设备上克隆缺失的 Git 仓库并物理重组分发文件实现多端对齐。
