@@ -501,6 +501,9 @@ fn sync_physical_distributions_for_skill(skill_id: &str, config: &AppConfig) -> 
         .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
         .ok_or_else(|| "Could not determine user home directory".to_string())?;
 
+    // Read staging file content once for potential rewriting
+    let staging_content = fs::read_to_string(&staging_file).map_err(|e| e.to_string())?;
+
     // --- AGY Physical Setup ---
     let agy_dest_dir = PathBuf::from(format!("C:\\Users\\{}\\.gemini\\skills\\shared\\{}\\", username, skill_id));
     let agy_dest_file = agy_dest_dir.join("SKILL.md");
@@ -514,17 +517,68 @@ fn sync_physical_distributions_for_skill(skill_id: &str, config: &AppConfig) -> 
     }
 
     // --- Reasonix Physical Setup ---
+    // Reasonix detects playbooks by scanning for files with a 'name:' field in YAML frontmatter.
+    // We must ensure the distributed file has 'name:' (not just 'id:') to be recognized.
     let reasonix_dest_dir = PathBuf::from(format!("C:\\Users\\{}\\.reasonix\\playbooks\\shared\\", username));
     let reasonix_dest_file = reasonix_dest_dir.join(format!("{}.md", skill_id));
 
     if skill_status.enable_reasonix {
         fs::create_dir_all(&reasonix_dest_dir).map_err(|e| e.to_string())?;
-        fs::copy(&staging_file, &reasonix_dest_file).map_err(|e| e.to_string())?;
+
+        // Normalize frontmatter for Reasonix: ensure 'name:' field exists.
+        // If the file already has 'name:' in frontmatter, copy as-is.
+        // Otherwise, inject/rewrite the frontmatter to add 'name:' and 'description:'.
+        let normalized = normalize_for_reasonix(skill_id, &staging_content);
+        fs::write(&reasonix_dest_file, normalized).map_err(|e| e.to_string())?;
     } else if reasonix_dest_file.exists() {
         let _ = fs::remove_file(&reasonix_dest_file);
     }
 
     Ok(())
+}
+
+/// Ensures the markdown content has a Reasonix-compatible frontmatter with `name:` field.
+/// Reasonix scans playbooks by looking for `name:` in YAML frontmatter.
+/// If the file uses `id:` but no `name:`, we inject a proper `name:` field.
+fn normalize_for_reasonix(skill_id: &str, content: &str) -> String {
+    // Check if content starts with frontmatter
+    if !content.starts_with("---") {
+        // No frontmatter at all — prepend one
+        return format!("---\nname: {}\n---\n\n{}", skill_id, content);
+    }
+
+    let parts: Vec<&str> = content.splitn(3, "---").collect();
+    if parts.len() < 3 {
+        return format!("---\nname: {}\n---\n\n{}", skill_id, content);
+    }
+
+    let yaml = parts[1];
+    let body = parts[2];
+
+    // Check if 'name:' already exists in the frontmatter
+    let has_name = yaml.lines().any(|l| l.trim().starts_with("name:"));
+    if has_name {
+        // Already correct, return as-is
+        return content.to_string();
+    }
+
+    // Extract description if available, else use skill_id
+    let description = yaml.lines()
+        .find(|l| l.trim().starts_with("description:"))
+        .map(|l| l.trim().trim_start_matches("description:").trim().trim_matches('"').trim_matches('\'')
+            .to_string())
+        .unwrap_or_default();
+
+    // Rebuild frontmatter with name injected at the top
+    let new_yaml = format!("\nname: {}\n{}", skill_id,
+        if !description.is_empty() {
+            format!("description: {}\n", description)
+        } else {
+            yaml.to_string()
+        }
+    );
+
+    format!("---{}---{}", new_yaml, body)
 }
 
 fn remove_physical_distribution(skill_id: &str) -> Result<(), String> {
@@ -551,6 +605,37 @@ fn remove_physical_distribution(skill_id: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Called on app startup from JS loadApp().
+/// Re-syncs all enabled skills to their physical destinations.
+/// This ensures that after a restart, .reasonix/playbooks/shared/ and .gemini/skills/shared/
+/// are always up-to-date with the current config state.
+#[tauri::command]
+async fn startup_sync_distributions() -> Result<(), String> {
+    let config = get_config()?;
+    let mut errors: Vec<String> = Vec::new();
+
+    for (skill_id, status) in &config.skills_status {
+        // Only sync skills that have at least one distribution enabled
+        if status.enable_agy || status.enable_reasonix {
+            let staging_file = get_staging_path().join(format!("{}.md", skill_id));
+            if staging_file.exists() {
+                if let Err(e) = sync_physical_distributions_for_skill(skill_id, &config) {
+                    errors.push(format!("{}: {}", skill_id, e));
+                }
+            }
+            // If staging file doesn't exist but is_enabled, silently skip
+            // (user hasn't downloaded it yet, or it was cleaned up)
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        // Non-fatal: report what failed but don't block app startup
+        Err(format!("Partial sync errors: {}", errors.join("; ")))
+    }
 }
 
 #[tauri::command]
@@ -690,13 +775,13 @@ async fn trigger_resurrect() -> Result<AppConfig, String> {
     }
 
     // 4. Redispatch all active skills that have cached md files
-    for (skill_id, status) in &recovered_config.skills_status {
+    for (skill_id, _status) in &recovered_config.skills_status {
         // Search locally in all cloned repositories for this skill
         let staging_file = get_staging_path().join(format!("{}.md", skill_id));
         if !staging_file.exists() {
             // Find in repositories
             let mut found_path = None;
-            let mut found_repo = None;
+            let mut _found_repo = None;
             for repo in &recovered_config.repositories {
                 let repo_path = get_repos_cache_path().join(&repo.id);
                 if repo_path.exists() {
@@ -704,7 +789,7 @@ async fn trigger_resurrect() -> Result<AppConfig, String> {
                     scan_directory_for_skills(&repo_path, &repo.id, &mut skills_list);
                     if let Some(matched) = skills_list.iter().find(|s| s.id == *skill_id) {
                         found_path = Some(repo_path.join(&matched.relative_path));
-                        found_repo = Some(repo.id.clone());
+                        _found_repo = Some(repo.id.clone());
                         break;
                     }
                 }
@@ -742,6 +827,7 @@ pub fn run() {
             sync_skill_now,
             sync_all_repositories,
             sync_single_repository,
+            startup_sync_distributions,
             trigger_backup,
             trigger_resurrect
         ])

@@ -92,6 +92,12 @@ async function loadApp() {
     renderSidebar();
     renderStats();
     renderSkillsGrid();
+
+    // 4. Re-sync all enabled skills to physical destinations (AGY + Reasonix)
+    //    This runs silently in the background after UI is shown, to recover from restarts.
+    invoke('startup_sync_distributions').catch(err => {
+      console.warn('[SkillControl] Startup sync partial error (non-fatal):', err);
+    });
   } catch (error) {
     showToast(`初始化失败: ${error}`, 'danger');
   }
