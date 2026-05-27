@@ -76,7 +76,7 @@ function showToast(message, type = 'success') {
 
 async function loadApp() {
   try {
-    // 1. Fetch Config
+    // === Phase 1: 本地配置读取（瞬间完成，本地文件 I/O）===
     state.config = await invoke('get_config');
     
     // Set persisted theme
@@ -88,16 +88,39 @@ async function loadApp() {
     dom.webdavPass.value = state.config.webdav.pass;
     dom.webdavAutoBackup.checked = state.config.webdav.auto_backup_enabled;
 
-    // 2. Fetch Discovered Skills
-    state.skills = await invoke('discover_all_skills');
-
-    // 3. Render page
+    // === Phase 2: 立即渲染界面骨架（零等待亮起主看盘）===
     renderSidebar();
     renderStats();
-    renderSkillsGrid();
+    // 骨架屏：加载中状态
+    dom.skillsGrid.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:80px 0;width:100%;grid-column:1/-1;">
+        <span style="display:inline-block;animation:spin 1s linear infinite;font-size:32px;">🔄</span>
+        <span style="color:var(--text-secondary);font-size:13.5px;letter-spacing:0.5px;font-weight:500;">正在后台扫描技能清单...</span>
+      </div>
+    `;
+    dom.skillsGrid.style.display = 'flex';
+    dom.emptyState.style.display = 'none';
 
-    // 4. Re-sync all enabled skills to physical destinations (AGY + Reasonix)
-    //    This runs silently in the background after UI is shown, to recover from restarts.
+    // === Phase 3: 非阻塞后台拉取技能清单（不 await，不卡界面）===
+    invoke('discover_all_skills')
+      .then(skills => {
+        state.skills = skills;
+        renderStats();
+        renderSkillsGrid();
+        console.log('[SkillControl] 技能清单后台加载完成:', skills.length, '个技能');
+      })
+      .catch(err => {
+        console.warn('[SkillControl] 技能后台拉取异常（非致命）:', err);
+        // 即使网络失败也不让界面空白 — 保留骨架但显示提示
+        dom.skillsGrid.innerHTML = `
+          <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:60px 0;width:100%;grid-column:1/-1;">
+            <span style="font-size:40px;">📡</span>
+            <span style="color:var(--text-secondary);font-size:13px;">技能清单加载失败，请点击「同步云端」重试</span>
+          </div>
+        `;
+      });
+
+    // === Phase 4: 开机后台同步物理分发（fire-and-forget，不阻塞任何东西）===
     invoke('startup_sync_distributions').catch(err => {
       console.warn('[SkillControl] Startup sync partial error (non-fatal):', err);
     });
@@ -606,7 +629,9 @@ dom.btnSaveRepo.addEventListener('click', async () => {
 // --- Modal Settings & Backup Controllers ---
 dom.btnSettings.addEventListener('click', () => {
   dom.modalSettings.classList.add('active');
-  fetchBackupList(); // auto-fetch on open
+  // Non-blocking background fetch — settings panel opens instantly
+  dom.backupVersionSelect.innerHTML = '<option value="">正在从云端读取备份列表中...</option>';
+  setTimeout(() => fetchBackupList(), 100); // 100ms delay so the modal renders first
 });
 
 dom.modalSettings.querySelector('.btn-close-modal').addEventListener('click', () => {
@@ -628,13 +653,14 @@ dom.btnSaveSettings.addEventListener('click', async () => {
   }
 });
 
-// Fetch Backups from WebDAV
+// Fetch Backups from WebDAV — 非阻塞拉取，绝不卡界面
 async function fetchBackupList() {
   dom.btnFetchBackups.disabled = true;
   dom.btnFetchBackups.textContent = '🔄 正在获取...';
   dom.backupVersionSelect.innerHTML = '<option value="">正在从云端读取备份列表中...</option>';
   
   try {
+    // 内置 15s 超时保护（由后端 create_webdav_client 保证）
     const list = await invoke('get_backup_list');
     dom.backupVersionSelect.innerHTML = '';
     
@@ -651,8 +677,8 @@ async function fetchBackupList() {
       dom.btnCloudRestoreVersioned.disabled = false;
     }
   } catch (error) {
-    dom.backupVersionSelect.innerHTML = '<option value="">读取备份列表失败，请先验证 WebDAV 配置</option>';
-    console.error(error);
+    dom.backupVersionSelect.innerHTML = '<option value="">⚠️ 读取备份列表失败（后端 15s 超时），请验证 WebDAV 配置或网络连接</option>';
+    console.warn('[SkillControl] WebDAV fetch failed (non-fatal):', error);
   } finally {
     dom.btnFetchBackups.disabled = false;
     dom.btnFetchBackups.textContent = '🔍 刷新列表';

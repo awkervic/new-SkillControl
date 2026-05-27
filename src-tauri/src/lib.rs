@@ -7,6 +7,7 @@ use std::process::Stdio;
 use tokio::process::Command as TokioCommand;
 use chrono::prelude::*;
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::Manager;
 
 #[cfg(target_os = "windows")]
@@ -139,6 +140,15 @@ fn get_staging_path() -> PathBuf {
     path
 }
 
+/// Create a reqwest::Client with short timeouts to prevent network hangs.
+fn create_webdav_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 // Base64 helper for WebDAV basic authorization
 fn base64_encode(input: &str) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -200,12 +210,21 @@ async fn save_config(config: AppConfig) -> Result<(), String> {
     let data = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     tokio::fs::write(&path, data).await.map_err(|e| e.to_string())?;
 
-    // Auto WebDAV backup if enabled
+    // Auto WebDAV backup if enabled — FIRE-AND-FORGET via tokio::spawn,
+    // NEVER block the IPC response waiting for a network request.
     if config.webdav.auto_backup_enabled 
         && !config.webdav.url.is_empty() 
         && config.webdav.url != "https://dav.jianguoyun.com/dav/" // don't auto-backup with default config placeholders
     {
-        let _ = backup_to_webdav_internal(&config).await;
+        let webdav_cfg = config.webdav.clone();
+        tokio::spawn(async move {
+            // Reconstruct a minimal AppConfig just for backup
+            let backup_cfg = AppConfig {
+                webdav: webdav_cfg,
+                ..AppConfig::default()
+            };
+            let _ = backup_to_webdav_internal(&backup_cfg).await;
+        });
     }
 
     Ok(())
@@ -985,7 +1004,7 @@ async fn backup_to_webdav_internal(config: &AppConfig) -> Result<String, String>
     zip_my_brain(&backup_zip_path, &get_my_brain_path())?;
 
     // Create client & authorization header
-    let client = reqwest::Client::new();
+    let client = create_webdav_client();
     let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
 
     // 1. Create or verify dedicated 'new-SkillControl' WebDAV directory via MKCOL
@@ -1044,7 +1063,7 @@ async fn trigger_resurrect() -> Result<AppConfig, String> {
     }
     url.push_str("config_backup.zip");
 
-    let client = reqwest::Client::new();
+    let client = create_webdav_client();
     let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
 
     // 1. Download Backup ZIP
@@ -1130,10 +1149,10 @@ async fn get_backup_list() -> Result<Vec<HashMap<String, String>>, String> {
     }
     url.push_str("new-SkillControl/");
 
-    let client = reqwest::Client::new();
+    let client = create_webdav_client();
     let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
 
-    // Send PROPFIND
+    // Send PROPFIND — timeout is now built into the client (connect 5s, total 15s)
     let response = client.request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
         .header("Authorization", &auth_header)
         .header("Depth", "1")
@@ -1201,7 +1220,7 @@ async fn trigger_restore_version(filename: String) -> Result<AppConfig, String> 
     url.push_str("new-SkillControl/");
     url.push_str(&filename);
 
-    let client = reqwest::Client::new();
+    let client = create_webdav_client();
     let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
 
     // 1. Download Backup ZIP
