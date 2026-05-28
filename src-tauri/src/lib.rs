@@ -258,6 +258,33 @@ async fn send_webdav_request(
     }
 }
 
+/// Robust namespace-insensitive XML extractor to parse href values from WebDAV PROPFIND responses.
+fn extract_hrefs_from_xml(xml: &str) -> Vec<String> {
+    let mut hrefs = Vec::new();
+    let lower_xml = xml.to_lowercase();
+    let mut pos = 0;
+    
+    while let Some(href_tag_end) = lower_xml[pos..].find("href>") {
+        let tag_start_candidate = pos + href_tag_end;
+        if let Some(open_bracket) = lower_xml[..tag_start_candidate].rfind('<') {
+            if !lower_xml[open_bracket..tag_start_candidate].contains('>') {
+                let content_start = tag_start_candidate + "href>".len();
+                if let Some(close_tag_start) = lower_xml[content_start..].find("href>") {
+                    let end_pos = content_start + close_tag_start;
+                    if let Some(close_bracket) = lower_xml[..end_pos].rfind("</") {
+                        if close_bracket >= content_start {
+                            let href_val = &xml[content_start..close_bracket];
+                            hrefs.push(href_val.trim().to_string());
+                        }
+                    }
+                }
+            }
+        }
+        pos += href_tag_end + 5;
+    }
+    hrefs
+}
+
 // Base64 helper for WebDAV basic authorization
 fn base64_encode(input: &str) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1394,26 +1421,18 @@ async fn trigger_restore_version(filename: String) -> Result<AppConfig, String> 
     let xml = propfind.text().await.map_err(|e| e.to_string())?;
 
     // Extract the href from PROPFIND XML that contains our filename
-    // PROPFIND XML format: <d:href>http://server/path/file.zip</d:href>
     let search_for = &filename; // e.g. "backup-2026-5-27-18-00-00.zip"
     let download_url = {
         let mut best = None;
-        let lower_xml = xml.to_lowercase();
         let lower_search = search_for.to_lowercase();
-        let mut pos = 0;
-        while let Some(href_start) = lower_xml[pos..].find("<d:href>") {
-            let content_start = pos + href_start + "<d:href>".len();
-            if let Some(href_end) = lower_xml[content_start..].find("</d:href>") {
-                let href_content = &lower_xml[content_start..content_start + href_end];
-                let actual = &xml[content_start..content_start + href_end]; // original case
-                if href_content.contains(&lower_search) {
-                    // Check if it ends with .zip
-                    if href_content.ends_with(".zip") && href_content.contains("backup-") {
-                        best = Some(actual.to_string());
-                    }
-                }
-                pos = content_start + href_end + "</d:href>".len();
-            } else { break; }
+        
+        let hrefs = extract_hrefs_from_xml(&xml);
+        for href in hrefs {
+            let lower_href = href.to_lowercase();
+            if lower_href.contains(&lower_search) && lower_href.ends_with(".zip") && lower_href.contains("backup-") {
+                best = Some(href);
+                break;
+            }
         }
         best.ok_or_else(|| format!("在 WebDAV 响应中未找到匹配的备份文件: {}", filename))?
     };
