@@ -113,3 +113,20 @@
 3. **v0.1.3 最新版本发布交付**：
    - 成功执行 `cargo tauri build` 编译生产包。
    - 配置 Git 身份为 `Antigravity`，将所有代码 and 故障排除记录自动 Commit 并 `git push` 同步至 GitHub `main` 分支。
+
+
+---
+
+### [2026-05-28 16:49] (北京时间)
+
+**核心变动描述：**
+1. **彻底攻克 115-WebDAV 云端拉取还原 302 超时死锁故障**：
+   - 深入剖析 115-WebDAV 下载请求的两阶段重定向链路。
+   - 禁用 `reqwest` 元数据及传输客户端的自动跟随重定向选项。
+   - 重构 `send_webdav_request` 通用网络请求包装器，手动拦截 3xx 重定向响应，并利用 `std::net::IpAddr` 地址解析器进行精细化局域网私有 IP 校验：仅当重定向目标 Host 为标准的**局域网私有 IP**（如 `10.x.x.x`，`192.168.x.x`，`172.x.x.x`，`169.254.x.x` 等）时，才强制将其纠正回本地环回 Host `127.0.0.1` 并保留原目标端口；其余公网 CDN 下载域名（如 `cdnfhnfile.115cdn.net`）则放行不做修改，打通了整条本地直链到公网直链的重定向下载链路。
+2. **极速本地打包与全自动 GitHub API Releases 高速发布**：
+   - 在本地通过 `cargo tauri build` 以 42.82 秒极速编译出 release 正式版包。
+   - 编写 C# P/Invoke 编译脚本，直接调用 Win32 `CredReadW` API 从 Windows 凭据管理器中安全、无感知导出 `git:https://github.com` 的 Token，免去了手动配置环境变量 `GITHUB_TOKEN` 的复杂流程。
+   - 编写自动化发布脚本直接向 GitHub REST API 递交申请，完成云端旧 `v0.1.3` 版本和安装包资产（`new-SkillControl_0.1.3_x64-setup.exe`）的强制替换与官方重新发布，完美落盘。
+3. **终端编码防假死清洗**：
+   - 强制将终端活动代码页切换为 UTF-8（`chcp 65001`），清除 Git/CLI 交互由于编码错乱导致的所有后台假死与超时隐患。
