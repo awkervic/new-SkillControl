@@ -158,9 +158,10 @@ fn create_webdav_client() -> reqwest::Client {
         header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
 
     reqwest::Client::builder()
+        .no_proxy()
         .default_headers(default_headers)
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(10))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -182,11 +183,79 @@ fn create_webdav_download_client() -> reqwest::Client {
         header::HeaderValue::from_static("no-cache"));
 
     reqwest::Client::builder()
+        .no_proxy()
         .default_headers(default_headers)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(120))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Generates Authorization header. If user or password is empty, returns None for anonymous access.
+fn get_auth_header(config: &AppConfig) -> Option<String> {
+    if config.webdav.user.trim().is_empty() || config.webdav.pass.trim().is_empty() {
+        None
+    } else {
+        Some(format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user.trim(), config.webdav.pass.trim()))))
+    }
+}
+
+/// Helper function to perform a WebDAV request with retry policy (up to 3 times, 500ms delay)
+/// and dual loopback support (swapping 127.0.0.1 <-> localhost on connection failure).
+async fn send_webdav_request(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+    auth_header: &Option<String>,
+    depth: Option<&str>,
+    translate: Option<&str>,
+    content_type: Option<&str>,
+    body: Option<Vec<u8>>,
+) -> Result<reqwest::Response, String> {
+    let mut current_url = url.to_string();
+    let mut attempt = 0;
+    const MAX_RETRIES: usize = 3;
+
+    loop {
+        let mut req = client.request(method.clone(), &current_url);
+        if let Some(ref auth) = auth_header {
+            req = req.header("Authorization", auth);
+        }
+        if let Some(d) = depth {
+            req = req.header("Depth", d);
+        }
+        if let Some(t) = translate {
+            req = req.header("Translate", t);
+        }
+        if let Some(ct) = content_type {
+            req = req.header("Content-Type", ct);
+        }
+        if let Some(ref b) = body {
+            req = req.body(b.clone());
+        }
+
+        println!("DEBUG: [send_webdav_request] Attempt {} to {}", attempt + 1, current_url);
+        match req.send().await {
+            Ok(resp) => {
+                return Ok(resp);
+            }
+            Err(e) => {
+                attempt += 1;
+                if attempt >= MAX_RETRIES {
+                    return Err(format!("连接 WebDAV 失败（已尝试 {} 次）: {}", MAX_RETRIES, e));
+                }
+                
+                // Swap local address formats
+                if current_url.contains("127.0.0.1") {
+                    current_url = current_url.replace("127.0.0.1", "localhost");
+                } else if current_url.contains("localhost") {
+                    current_url = current_url.replace("localhost", "127.0.0.1");
+                }
+
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
 }
 
 // Base64 helper for WebDAV basic authorization
@@ -1066,7 +1135,7 @@ async fn backup_to_webdav_internal(config: &AppConfig) -> Result<String, String>
 
     // Create client with longer timeout for upload
     let client = create_webdav_download_client();
-    let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
+    let auth_header = get_auth_header(config);
 
     // 1. Create or verify dedicated 'new-SkillControl' WebDAV directory via MKCOL
     let mut folder_url = config.webdav.url.clone();
@@ -1075,10 +1144,16 @@ async fn backup_to_webdav_internal(config: &AppConfig) -> Result<String, String>
     }
     folder_url.push_str("new-SkillControl/");
 
-    let _mkcol_res = client.request(reqwest::Method::from_bytes(b"MKCOL").unwrap(), &folder_url)
-        .header("Authorization", &auth_header)
-        .send()
-        .await;
+    let _mkcol_res = send_webdav_request(
+        &client,
+        reqwest::Method::from_bytes(b"MKCOL").unwrap(),
+        &folder_url,
+        &auth_header,
+        None,
+        None,
+        None,
+        None,
+    ).await;
 
     // 2. Generate chronological backup name: backup-YYYY-M-D-H-Min-S.zip
     let now = chrono::Local::now();
@@ -1091,13 +1166,16 @@ async fn backup_to_webdav_internal(config: &AppConfig) -> Result<String, String>
     let zip_bytes = fs::read(&backup_zip_path).map_err(|e| e.to_string())?;
     let _ = fs::remove_file(&backup_zip_path); // clean up temp zip file
 
-    let response = client.put(&upload_url)
-        .header("Authorization", &auth_header)
-        .header("Content-Type", "application/zip")
-        .body(zip_bytes)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let response = send_webdav_request(
+        &client,
+        reqwest::Method::PUT,
+        &upload_url,
+        &auth_header,
+        None,
+        None,
+        Some("application/zip"),
+        Some(zip_bytes),
+    ).await?;
 
     if response.status().is_success() {
         Ok(filename)
@@ -1127,16 +1205,19 @@ async fn trigger_resurrect() -> Result<AppConfig, String> {
 
     // Use download client with 120s timeout for ZIP download
     let client = create_webdav_download_client();
-    let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
+    let auth_header = get_auth_header(&config);
 
     // 1. Download Backup ZIP with WebDAV headers
-    let response = client.get(&url)
-        .header("Authorization", &auth_header)
-        .header("Depth", "0")
-        .header("Translate", "f")
-        .send()
-        .await
-        .map_err(|e| format!("Failed to download backup: {}", e))?;
+    let response = send_webdav_request(
+        &client,
+        reqwest::Method::GET,
+        &url,
+        &auth_header,
+        Some("0"),
+        Some("f"),
+        None,
+        None,
+    ).await?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -1219,15 +1300,19 @@ async fn get_backup_list() -> Result<Vec<HashMap<String, String>>, String> {
     url.push_str("new-SkillControl/");
 
     let client = create_webdav_client();
-    let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
+    let auth_header = get_auth_header(&config);
 
-    // Send PROPFIND — timeout is now built into the client (connect 5s, total 15s)
-    let response = client.request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
-        .header("Authorization", &auth_header)
-        .header("Depth", "1")
-        .send()
-        .await
-        .map_err(|e| format!("Failed to connect to WebDAV: {}", e))?;
+    // Send PROPFIND
+    let response = send_webdav_request(
+        &client,
+        reqwest::Method::from_bytes(b"PROPFIND").unwrap(),
+        &url,
+        &auth_header,
+        Some("1"),
+        None,
+        None,
+        None,
+    ).await?;
 
     if !response.status().is_success() {
         return Err(format!("WebDAV returned status: {}", response.status()));
@@ -1282,7 +1367,7 @@ async fn get_backup_list() -> Result<Vec<HashMap<String, String>>, String> {
 async fn trigger_restore_version(filename: String) -> Result<AppConfig, String> {
     let config = get_config_internal().await?;
     let client = create_webdav_download_client();
-    let auth_header = format!("Basic {}", base64_encode(&format!("{}:{}", config.webdav.user, config.webdav.pass)));
+    let auth_header = get_auth_header(&config);
 
     // Step 1: PROPFIND the new-SkillControl/ folder to get the SERVER's exact href for this file.
     // Some WebDAV servers (e.g. 115 drive) use different internal paths than what we construct.
@@ -1291,12 +1376,16 @@ async fn trigger_restore_version(filename: String) -> Result<AppConfig, String> 
     folder_url.push_str("new-SkillControl/");
 
     println!("DEBUG: [trigger_restore_version] PROPFIND folder: {}", folder_url);
-    let propfind = client.request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &folder_url)
-        .header("Authorization", &auth_header)
-        .header("Depth", "1")
-        .send()
-        .await
-        .map_err(|e| format!("连接 WebDAV 失败: {}", e))?;
+    let propfind = send_webdav_request(
+        &client,
+        reqwest::Method::from_bytes(b"PROPFIND").unwrap(),
+        &folder_url,
+        &auth_header,
+        Some("1"),
+        None,
+        None,
+        None,
+    ).await?;
 
     if !propfind.status().is_success() {
         return Err(format!("文件夹查询失败: 服务器返回 {}", propfind.status()));
@@ -1356,13 +1445,16 @@ async fn trigger_restore_version(filename: String) -> Result<AppConfig, String> 
     println!("DEBUG: [trigger_restore_version] final download URL: {}", final_url);
 
     // Step 2: Download the ZIP from the server's canonical URL
-    let response = client.get(&final_url)
-        .header("Authorization", &auth_header)
-        .header("Depth", "0")
-        .header("Translate", "f")
-        .send()
-        .await
-        .map_err(|e| format!("下载备份文件失败: {}", e))?;
+    let response = send_webdav_request(
+        &client,
+        reqwest::Method::GET,
+        &final_url,
+        &auth_header,
+        Some("0"),
+        Some("f"),
+        None,
+        None,
+    ).await?;
 
     if !response.status().is_success() {
         let status = response.status();
