@@ -159,6 +159,7 @@ fn create_webdav_client() -> reqwest::Client {
 
     reqwest::Client::builder()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .default_headers(default_headers)
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
@@ -184,6 +185,7 @@ fn create_webdav_download_client() -> reqwest::Client {
 
     reqwest::Client::builder()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .default_headers(default_headers)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(120))
@@ -214,7 +216,9 @@ async fn send_webdav_request(
 ) -> Result<reqwest::Response, String> {
     let mut current_url = url.to_string();
     let mut attempt = 0;
+    let mut redirect_count = 0;
     const MAX_RETRIES: usize = 3;
+    let original_parsed = reqwest::Url::parse(url).ok();
 
     loop {
         let mut req = client.request(method.clone(), &current_url);
@@ -237,6 +241,47 @@ async fn send_webdav_request(
         println!("DEBUG: [send_webdav_request] Attempt {} to {}", attempt + 1, current_url);
         match req.send().await {
             Ok(resp) => {
+                let status = resp.status();
+                if status.is_redirection() {
+                    redirect_count += 1;
+                    if redirect_count > 5 {
+                        return Err("重定向次数过多，已终止".to_string());
+                    }
+                    if let Some(loc_val) = resp.headers().get(reqwest::header::LOCATION) {
+                        if let Ok(loc_str) = loc_val.to_str() {
+                            let base_url = reqwest::Url::parse(&current_url).map_err(|e| e.to_string())?;
+                            let mut redirect_url = base_url.join(loc_str).map_err(|e| e.to_string())?;
+                            
+                            // 校验并替换 Host
+                            if let Some(ref orig) = original_parsed {
+                                let orig_host = orig.host_str().unwrap_or("");
+                                if orig_host == "127.0.0.1" || orig_host == "localhost" {
+                                    let redir_host = redirect_url.host_str().unwrap_or("");
+                                    if redir_host != "127.0.0.1" && redir_host != "localhost" {
+                                        // 仅当重定向目标是局域网私有 IP 时才进行本地环回纠错，以防干扰后续重定向到公网 CDN 下载直链
+                                        let is_private_ip = if let Ok(ip) = redir_host.parse::<std::net::IpAddr>() {
+                                            match ip {
+                                                std::net::IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_link_local(),
+                                                std::net::IpAddr::V6(_) => false,
+                                            }
+                                        } else {
+                                            false
+                                        };
+
+                                        if is_private_ip {
+                                            println!("DEBUG: [send_webdav_request] Correcting redirect host from '{}' to '{}'", redir_host, orig_host);
+                                            let _ = redirect_url.set_host(Some(orig_host));
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            current_url = redirect_url.to_string();
+                            println!("DEBUG: [send_webdav_request] Following redirect to: {}", current_url);
+                            continue;
+                        }
+                    }
+                }
                 return Ok(resp);
             }
             Err(e) => {
