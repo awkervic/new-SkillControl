@@ -97,3 +97,19 @@
 **核心变动描述：**
 1. **用户验证 WebDAV 历史版本恢复下载成功**：经过 Chrome 120 浏览器 UA 全套伪装 + PROPFIND href 真实路径下载双重修复后，用户从 115 网盘 WebDAV 成功下载备份 ZIP 并完成还原。403 Forbidden 问题彻底解决。
 2. **v0.1.3 Release 已覆盖发布**：包含冷启动卡死修复、Time Machine 面板格式修复、403 下载绝杀三大修复。完整 Release 页面：https://github.com/awkervic/new-SkillControl/releases/tag/v0.1.3
+
+
+---
+
+### [2026-05-28 14:15] (北京时间)
+
+**核心变动描述：**
+1. **故障与本地 WebDAV 针对性调优**：
+   - **代理与超时拦截**：客户端初始化中注入 `.no_proxy()`，以绕过 Windows 本地代理/Loopback 拦截。
+   - **高防错重试与本地双通道适配**：在 `send_webdav_request` 中实现了 3 次自动重试与 127.0.0.1 ↔ localhost 本地回环地址双向智能替换，防止系统环路拦截与开机时间差死锁。
+   - **本地明文匿名访问**：当检测到 WebDAV 账号或密码为空时，自动关闭 Basic 认证头输入，采用纯净匿名流读写。
+2. **WebDAV 恢复故障（命名空间失效）修复**：
+   - 彻底重构了 `trigger_restore_version` 中的 XML 解析逻辑，引入了命名空间不敏感的 `extract_hrefs_from_xml` 通用提取函数，能够兼容不同 WebDAV 服务（如 `<D:href>`, `<d:href>`, `<href>` 等）返回 XML 响应，彻底根治了“备份成功但无法拉取恢复”的问题。
+3. **v0.1.3 最新版本发布交付**：
+   - 成功执行 `cargo tauri build` 编译生产包。
+   - 配置 Git 身份为 `Antigravity`，将所有代码 and 故障排除记录自动 Commit 并 `git push` 同步至 GitHub `main` 分支。
