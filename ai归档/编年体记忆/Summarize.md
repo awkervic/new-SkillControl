@@ -146,23 +146,11 @@
 7. **无缝 GitHub API 云端发布**：编写基于 Python + Git Credential Manager (GCM) 的自动化上传工具，无 `gh` CLI 依赖下成功编译、打标并向 `v0.1.4` 发布上传了 NSIS 完整安装包。
 
 
-### [2026-06-06 15:30] (北京时间)
+### [2026-06-06 15:35] (北京时间)
 
 **核心变动描述：**
 1. **重复技能 ID 隔离与判定**：后端在 `scan_directory_for_skills` 及 `parse_markdown_skill` 中引入配置中的 `skills_status` 映射，当检测到本地存在 staging 文件时，进一步校验 `repo_id` 是否匹配或内容是否相同，防止多仓库同名技能被误判为“已下载”。
 2. **多仓库来源 Badge 渲染**：前端技能手风琴列表的标题旁新增展示来源仓库 (Repo ID) 的 badge 标签，方便用户直观区分同名技能。
-3. **头部状态灯一键开关分发**：在技能列表卡片头部的“AGY CLI”、“AGY 2.0”、“Reasonix”状态指示灯上绑定 click 快速切换事件，直接触发对应类型的开关指令，并在操作成功后同步修改手风琴内部的对应 checkbox 开关，阻止 click 事件冒泡以防触发手风琴面板的展开与折叠。
-
-
-### [2026-06-06 15:35] (北京时间)
-
-**核心变动描述：**
-1. **版本迭代 v0.1.5**：将 `Cargo.toml` 和 `tauri.conf.json` 中的版本号从 `0.1.4` 递增（迭代 0.0.1）至 `0.1.5`。
-2. **打包与 GitHub API 云端发布**：运行 `cargo tauri build` 编译生产包，并使用基于 Python 的凭据自动化管理与 API 调用脚本，成功创建 `v0.1.5` 官方 Release 页面并成功将打包好的 Windows 安装包 (new-SkillControl_0.1.5_x64-setup.exe) 上传作为主要分发资产。
-
-
-### [2026-06-06 15:40] (北京时间)
-
-**核心变动描述：**
-1. **修复点击状态指示器时的 TypeError 崩溃**：修复了在技能标题行点击指示灯（AGY CLI / AGY 2.0 / Reasonix）触发异步开关切换时，由于 `await` 之后事件对象被浏览器垃圾回收，访问 `e.currentTarget.classList` 抛出 `TypeError: Cannot read properties of null` 的问题。改用 Local Scope 捕获的 `ind` (即 `forEach` 循环中的元素引用) 代替 `e.currentTarget`。
-2. **发布 v0.1.6 Hotfix**：版本号升级至 `0.1.6`，编译打包并创建 GitHub Releases v0.1.6 成功上传 Windows NSIS 安装包资产。
+3. **头部状态灯一键开关分发**：在技能列表卡片头部的“AGY CLI”、“AGY 2.0”、“Reasonix”状态指示灯上绑定 click 快速切换事件，直接触发对应类型的开关指令，并在操作成功后同步修改手风琴内部 of 对应 checkbox 开关，阻止 click 事件冒泡以防触发手风琴面板的展开与折叠。
+4. **修复点击状态指示器时的 TypeError 崩溃**：修复了在技能标题行点击指示灯（AGY CLI / AGY 2.0 / Reasonix）触发异步开关切换时，由于 `await` 之后事件对象被浏览器垃圾回收，访问 `e.currentTarget.classList` 抛出 `TypeError: Cannot read properties of null` 的问题。改用 Local Scope 捕获的 `ind` (即 `forEach` 循环中的元素引用) 代替 `e.currentTarget`。
+5. **版本迭代与发布 v0.1.5**：将 `Cargo.toml` 和 `tauri.conf.json` 中的版本号更新为 `0.1.5`，运行 `cargo tauri build` 编译生产包，并使用基于 Python 的凭据自动化管理与 API 调用脚本，成功创建 `v0.1.5` 官方 Release 页面并成功将打包好的 Windows 安装包 (new-SkillControl_0.1.5_x64-setup.exe) 上传作为主要分发资产。
