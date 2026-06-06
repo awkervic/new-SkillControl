@@ -152,3 +152,10 @@
 1. **重复技能 ID 隔离与判定**：后端在 `scan_directory_for_skills` 及 `parse_markdown_skill` 中引入配置中的 `skills_status` 映射，当检测到本地存在 staging 文件时，进一步校验 `repo_id` 是否匹配或内容是否相同，防止多仓库同名技能被误判为“已下载”。
 2. **多仓库来源 Badge 渲染**：前端技能手风琴列表的标题旁新增展示来源仓库 (Repo ID) 的 badge 标签，方便用户直观区分同名技能。
 3. **头部状态灯一键开关分发**：在技能列表卡片头部的“AGY CLI”、“AGY 2.0”、“Reasonix”状态指示灯上绑定 click 快速切换事件，直接触发对应类型的开关指令，并在操作成功后同步修改手风琴内部的对应 checkbox 开关，阻止 click 事件冒泡以防触发手风琴面板的展开与折叠。
+
+
+### [2026-06-06 15:35] (北京时间)
+
+**核心变动描述：**
+1. **版本迭代 v0.1.5**：将 `Cargo.toml` 和 `tauri.conf.json` 中的版本号从 `0.1.4` 递增（迭代 0.0.1）至 `0.1.5`。
+2. **打包与 GitHub API 云端发布**：运行 `cargo tauri build` 编译生产包，并使用基于 Python 的凭据自动化管理与 API 调用脚本，成功创建 `v0.1.5` 官方 Release 页面并成功将打包好的 Windows 安装包 (new-SkillControl_0.1.5_x64-setup.exe) 上传作为主要分发资产。

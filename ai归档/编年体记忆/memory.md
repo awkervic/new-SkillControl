@@ -44,3 +44,4 @@
 * [2026-06-06] 特性：后端 parse_markdown_skill 传入 skills_status 并校验 repo_id 隔离多仓库同名 ID 技能的下载/安装状态判断 (src-tauri/src/lib.rs)
 * [2026-06-06] 界面：前端技能列表卡片标题处渲染来源仓库 badge 以区分同名技能 (ui/index.js, ui/index.css)
 * [2026-06-06] 交互：前端技能头部状态指示器绑定快速 toggle 切换分发开关并阻止手风琴事件冒泡 (ui/index.js, ui/index.css)
+* [2026-06-06] 发布：版本号更新至 v0.1.5，重新编译打包，提取 Git GCM 凭据，通过 Python 向 GitHub Releases v0.1.5 自动发布并直接上传了安装包。(https://github.com/awkervic/new-SkillControl/releases/tag/v0.1.5)
