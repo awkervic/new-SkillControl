@@ -277,7 +277,7 @@ function renderStats() {
   let reasonixCount = 0;
   
   Object.values(state.config.skills_status).forEach(status => {
-    if (status.enable_agy) agyCount++;
+    if (status.enable_agy || status.enable_agy2) agyCount++;
     if (status.enable_reasonix) reasonixCount++;
   });
   
@@ -312,103 +312,179 @@ function renderSkillsGrid() {
     return;
   }
 
-  dom.skillsGrid.style.display = 'grid';
+  dom.skillsGrid.style.display = 'flex';
+  dom.skillsGrid.style.flexDirection = 'column';
+  dom.skillsGrid.style.gap = '12px';
   dom.emptyState.style.display = 'none';
 
   filtered.forEach(skill => {
-    const card = document.createElement('div');
-    card.className = 'skill-card';
+    const item = document.createElement('div');
+    item.className = 'skill-bar-item';
+    item.id = `skill-item-${skill.id}`;
 
     // Retrieve active switches status from config
     const status = state.config.skills_status[skill.id] || {
       repo_id: skill.repo_id,
       scope: 'global',
       enable_agy: false,
+      enable_agy2: false,
       enable_reasonix: false,
       auto_update: true
     };
 
-    const repoName = state.config.repositories.find(r => r.id === skill.repo_id)?.name || '未知仓库';
+    const repo = state.config.repositories.find(r => r.id === skill.repo_id);
+    const repoName = repo ? repo.name : '未知仓库';
+    const repoUrl = repo ? repo.url : '';
 
-    card.innerHTML = `
-      <div class="skill-header">
-        <div class="skill-title-area">
-          <h3 class="skill-title">${skill.name}</h3>
-          <span class="skill-repo-badge">📦 隶属仓库: ${repoName}</span>
+    item.innerHTML = `
+      <div class="skill-bar-header" data-skill="${skill.id}">
+        <div class="skill-bar-left">
+          <svg class="skill-bar-chevron icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 18 15 12 9 6"></polyline>
+          </svg>
+          <span class="skill-bar-title">${skill.name}</span>
+          <span class="badge ${skill.is_installed ? 'badge-installed' : 'badge-not-installed'}">
+            ${skill.is_installed ? '已下载' : '未下载'}
+          </span>
         </div>
-        ${state.activeRepoId === 'downloaded' ? `
-          <button class="btn-crush-skill" data-skill="${skill.id}" title="彻底物理粉碎并抹除此技能">
-            🗑️ 彻底删除
-          </button>
-        ` : ''}
+        <div class="skill-bar-right">
+          <div class="active-indicator-group">
+            <span class="active-indicator indicator-agy ${status.enable_agy ? 'active' : ''}">AGY 1.0</span>
+            <span class="active-indicator indicator-agy2 ${status.enable_agy2 ? 'active' : ''}">AGY 2.0</span>
+            <span class="active-indicator indicator-reasonix ${status.enable_reasonix ? 'active' : ''}">Reasonix</span>
+          </div>
+        </div>
       </div>
-      <p class="skill-desc">${skill.description || '暂无对该智能体技能的详细描述文本。'}</p>
       
-      <!-- Core Switch Row (Ironclad controls) -->
-      <div class="skill-switches">
-        <div class="control-switch-row">
-          <div class="switch-label-group">
-            <span class="switch-label-name label-agy">⚡ AGY 技能分发</span>
-            <span class="switch-label-desc">在 .gemini 隐藏沙箱创建物理 SKILL.md</span>
+      <div class="skill-bar-drawer">
+        <div class="skill-drawer-content">
+          <!-- Description -->
+          <div class="skill-detail-row">
+            <span class="skill-detail-title">详细描述</span>
+            <p class="skill-desc" style="margin-bottom: 0;">${skill.description || '暂无对该智能体技能的详细描述文本。'}</p>
           </div>
-          <label class="switch-container">
-            <input type="checkbox" class="toggle-switch" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-type="agy" ${status.enable_agy ? 'checked' : ''} ${!skill.is_installed ? 'disabled' : ''}>
-            <span class="switch-slider"></span>
-          </label>
-        </div>
-
-        <div class="control-switch-row">
-          <div class="switch-label-group">
-            <span class="switch-label-name label-reasonix">🌀 Reasonix 播放剧本</span>
-            <span class="switch-label-desc">在 .reasonix 隐藏剧本池映射独立剧本</span>
+          
+          <!-- Source & Origin -->
+          <div class="skill-detail-row">
+            <span class="skill-detail-title">来源仓库</span>
+            <div class="skill-source-info">
+              <span>📦 ${repoName}</span>
+              ${repoUrl ? `<span style="opacity:0.6; font-size:11px;">(${repoUrl})</span>` : ''}
+            </div>
           </div>
-          <label class="switch-container">
-            <input type="checkbox" class="toggle-switch" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-type="reasonix" ${status.enable_reasonix ? 'checked' : ''} ${!skill.is_installed ? 'disabled' : ''}>
-            <span class="switch-slider"></span>
-          </label>
-        </div>
+          
+          <!-- Switches Grid (Horizontal layout) -->
+          <div class="skill-switches-horizontal">
+            <div class="control-switch-row">
+              <div class="switch-label-group">
+                <span class="switch-label-name label-agy">⚡ AGY 1.0 技能分发</span>
+                <span class="switch-label-desc">在 .gemini\antigravity-cli 分发 SKILL.md</span>
+              </div>
+              <label class="switch-container">
+                <input type="checkbox" class="toggle-switch" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-type="agy" ${status.enable_agy ? 'checked' : ''} ${!skill.is_installed ? 'disabled' : ''}>
+                <span class="switch-slider"></span>
+              </label>
+            </div>
 
-        <div class="control-switch-row">
-          <div class="switch-label-group">
-            <span class="switch-label-name label-auto-update">🔄 开机自动同步更新</span>
-            <span class="switch-label-desc">系统启动时自动拉取最新 Git 并重新分发</span>
+            <div class="control-switch-row">
+              <div class="switch-label-group">
+                <span class="switch-label-name label-agy2">🚀 AGY 2.0 技能分发</span>
+                <span class="switch-label-desc">在 .gemini\antigravity 分发 SKILL.md</span>
+              </div>
+              <label class="switch-container">
+                <input type="checkbox" class="toggle-switch" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-type="agy2" ${status.enable_agy2 ? 'checked' : ''} ${!skill.is_installed ? 'disabled' : ''}>
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+    
+            <div class="control-switch-row">
+              <div class="switch-label-group">
+                <span class="switch-label-name label-reasonix">🌀 Reasonix 播放剧本</span>
+                <span class="switch-label-desc">在 .reasonix 映射独立剧本</span>
+              </div>
+              <label class="switch-container">
+                <input type="checkbox" class="toggle-switch" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-type="reasonix" ${status.enable_reasonix ? 'checked' : ''} ${!skill.is_installed ? 'disabled' : ''}>
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+    
+            <div class="control-switch-row">
+              <div class="switch-label-group">
+                <span class="switch-label-name label-auto-update">🔄 开机自动同步更新</span>
+                <span class="switch-label-desc">系统启动时自动从 Git 同步更新</span>
+              </div>
+              <label class="switch-container">
+                <input type="checkbox" class="toggle-switch" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-type="auto_update" ${status.auto_update ? 'checked' : ''}>
+                <span class="switch-slider"></span>
+              </label>
+            </div>
           </div>
-          <label class="switch-container">
-            <input type="checkbox" class="toggle-switch" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-type="auto_update" ${status.auto_update ? 'checked' : ''}>
-            <span class="switch-slider"></span>
-          </label>
+          
+          <!-- Scope Selector (Global / Project / Shared) -->
+          <div class="scope-selector-row">
+            <div class="switch-label-group">
+              <span class="switch-label-name" style="color:var(--text-secondary);font-size:11px;">📡 分发范围</span>
+              <span class="switch-label-desc">Global（全局级）| Project（项目级）| Shared（共享级）</span>
+            </div>
+            <div class="scope-toggle-group">
+              <button class="btn-scope btn-scope-global ${status.scope === 'global' ? 'active' : ''}" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-scope="global">Global</button>
+              <button class="btn-scope btn-scope-project ${status.scope === 'project' ? 'active' : ''}" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-scope="project">Project</button>
+              <button class="btn-scope btn-scope-shared ${status.scope === 'shared' ? 'active' : ''}" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-scope="shared">Shared</button>
+            </div>
+          </div>
+          
+          <!-- Action Buttons Footer -->
+          <div class="skill-actions-row">
+            <div class="skill-action-left">
+              ${!skill.is_installed ? `
+                <button class="btn-card-action btn-cloud-download" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-path="${skill.relative_path}">
+                  📥 下载并安装到本地
+                </button>
+              ` : `
+                <button class="btn-card-action btn-sync-now" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-path="${skill.relative_path}">
+                  🔄 Sync Now
+                </button>
+                <button class="btn-card-action btn-view-diff" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-path="${skill.relative_path}">
+                  📄 差异对比
+                </button>
+              `}
+            </div>
+            ${skill.is_installed ? `
+              <button class="btn-crush-skill" data-skill="${skill.id}" title="彻底物理粉碎并抹除此技能" style="margin-left: 0;">
+                🗑️ 彻底删除
+              </button>
+            ` : ''}
+          </div>
+          <!-- Collapsible Diff Area -->
+          <div class="diff-area-container" style="display:none; width: 100%;"></div>
         </div>
-      </div>
-
-      <!-- Scope Selector (Global / Project / Shared) -->
-      <div class="scope-selector-row">
-        <div class="switch-label-group">
-          <span class="switch-label-name" style="color:var(--text-secondary);font-size:11px;">📡 分发范围</span>
-          <span class="switch-label-desc">Global（全局级）| Project（项目级）| Shared（共享级）</span>
-        </div>
-        <div class="scope-toggle-group">
-          <button class="btn-scope btn-scope-global ${status.scope === 'global' ? 'active' : ''}" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-scope="global">Global</button>
-          <button class="btn-scope btn-scope-project ${status.scope === 'project' ? 'active' : ''}" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-scope="project">Project</button>
-          <button class="btn-scope btn-scope-shared ${status.scope === 'shared' ? 'active' : ''}" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-scope="shared">Shared</button>
-        </div>
-      </div>
-
-      <!-- Action Card Buttons Footer -->
-      <div class="skill-card-footer">
-        ${!skill.is_installed ? `
-          <button class="btn-card-action btn-cloud-download" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-path="${skill.relative_path}">
-            📥 下载并安装到本地
-          </button>
-        ` : `
-          <button class="btn-card-action btn-sync-now" data-skill="${skill.id}" data-repo="${skill.repo_id}" data-path="${skill.relative_path}">
-            🔄 Sync Now
-          </button>
-        `}
       </div>
     `;
 
+    // Click on header to toggle accordion expand/collapse
+    item.querySelector('.skill-bar-header').addEventListener('click', (e) => {
+      if (e.target.closest('.toggle-switch') || e.target.closest('button') || e.target.closest('a')) {
+        return;
+      }
+      
+      const isExpanded = item.classList.contains('expanded');
+      
+      // Close other expanded items for clean accordion behavior
+      document.querySelectorAll('.skill-bar-item.expanded').forEach(other => {
+        if (other !== item) {
+          other.classList.remove('expanded');
+        }
+      });
+
+      if (isExpanded) {
+        item.classList.remove('expanded');
+      } else {
+        item.classList.add('expanded');
+      }
+    });
+
     // Listen to changes on switches
-    card.querySelectorAll('.toggle-switch').forEach(sw => {
+    item.querySelectorAll('.toggle-switch').forEach(sw => {
       sw.addEventListener('change', async (e) => {
         const skillId = e.target.dataset.skill;
         const repoId = e.target.dataset.repo;
@@ -416,7 +492,6 @@ function renderSkillsGrid() {
         const checked = e.target.checked;
         
         try {
-          // Read current scope from the status in config
           const scope = (state.config.skills_status[skillId] || {}).scope || 'global';
           state.config = await invoke('toggle_skill_switch', {
             skillId,
@@ -426,11 +501,17 @@ function renderSkillsGrid() {
             scope: scope
           });
           renderStats();
+          
+          // Update indicators on the header bar
+          const ind = item.querySelector(`.indicator-${type}`);
+          if (ind) {
+            if (checked) ind.classList.add('active');
+            else ind.classList.remove('active');
+          }
+          
           showToast(`技能 [${skillId}] 已${checked ? '点亮启动' : '注销关闭'} [${type.toUpperCase()}]`);
           
-          // After any AGY/Reasonix toggle, notify Reasonix to reload its playbook index
-          // and update AGY's config.json installed_skills registry
-          if (type === 'reasonix' || type === 'agy') {
+          if (type === 'reasonix' || type === 'agy' || type === 'agy2') {
             invoke('notify_reasonix_reload').catch(err => {
               console.warn('[SkillControl] Reasonix reload note (non-blocking):', err);
             });
@@ -443,7 +524,7 @@ function renderSkillsGrid() {
     });
 
     // Scope selector click
-    card.querySelectorAll('.btn-scope').forEach(btn => {
+    item.querySelectorAll('.btn-scope').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         const target = e.currentTarget;
         const skillId = target.dataset.skill;
@@ -455,7 +536,7 @@ function renderSkillsGrid() {
             skillId, repoId, scope
           });
           // Update active visual
-          card.querySelectorAll('.btn-scope').forEach(b => b.classList.remove('active'));
+          item.querySelectorAll('.btn-scope').forEach(b => b.classList.remove('active'));
           target.classList.add('active');
           showToast(`技能 [${skillId}] 分发范围切换为 [${scope.toUpperCase()}]`);
         } catch (error) {
@@ -465,7 +546,7 @@ function renderSkillsGrid() {
     });
 
     // Download/Install click
-    const btnDownload = card.querySelector('.btn-cloud-download');
+    const btnDownload = item.querySelector('.btn-cloud-download');
     if (btnDownload) {
       btnDownload.addEventListener('click', async (e) => {
         const btn = e.currentTarget;
@@ -489,7 +570,7 @@ function renderSkillsGrid() {
     }
 
     // Sync Now Click
-    const btnSync = card.querySelector('.btn-sync-now');
+    const btnSync = item.querySelector('.btn-sync-now');
     if (btnSync) {
       btnSync.addEventListener('click', async (e) => {
         const btn = e.currentTarget;
@@ -504,7 +585,6 @@ function renderSkillsGrid() {
           await invoke('sync_skill_now', { skillId, repoId, relativePath: path });
           showToast(`技能 [${skillId}] 手动物理重组分发同步完成！`);
           
-          // Notify Reasonix to reload playbooks after sync
           invoke('notify_reasonix_reload').catch(err => {
             console.warn('[SkillControl] Reasonix reload note (non-blocking):', err);
           });
@@ -519,7 +599,7 @@ function renderSkillsGrid() {
     }
 
     // Crush/Uninstall Skill Click
-    const btnCrush = card.querySelector('.btn-crush-skill');
+    const btnCrush = item.querySelector('.btn-crush-skill');
     if (btnCrush) {
       btnCrush.addEventListener('click', async (e) => {
         const btn = e.currentTarget;
@@ -532,7 +612,6 @@ function renderSkillsGrid() {
             state.config = await invoke('uninstall_skill', { skillId });
             showToast(`技能 [${skillId}] 已被彻底粉碎，从系统里完全灰飞烟灭！`);
             
-            // Notify Reasonix to reload playbooks after deletion
             invoke('notify_reasonix_reload').catch(err => {
               console.warn('[SkillControl] Reasonix reload note:', err);
             });
@@ -547,7 +626,64 @@ function renderSkillsGrid() {
       });
     }
 
-    dom.skillsGrid.appendChild(card);
+    // Diff view toggle
+    item.querySelectorAll('.btn-view-diff').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const skillId = btn.dataset.skill;
+        const repoId = btn.dataset.repo;
+        const path = btn.dataset.path;
+        const diffArea = item.querySelector('.diff-area-container');
+        
+        if (diffArea.style.display === 'block') {
+          diffArea.style.display = 'none';
+          diffArea.innerHTML = '';
+          return;
+        }
+        
+        diffArea.style.display = 'block';
+        diffArea.innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:center;padding:20px;font-size:12px;color:var(--text-muted);">
+            <span style="display:inline-block;animation:spin 1s linear infinite;margin-right:8px;">🔄</span> 正在对比差异中...
+          </div>
+        `;
+        
+        try {
+          const res = await invoke('get_skill_diff', { skillId, repoId, relativePath: path });
+          const stagedContent = res.staged || '';
+          const repoContent = res.repo || '';
+          
+          if (!stagedContent && !repoContent) {
+             diffArea.innerHTML = `<div style="padding:16px;color:var(--text-muted);font-size:12px;text-align:center;">暂无内容对比。</div>`;
+             return;
+          }
+          
+          const diffResult = computeLineDiff(stagedContent, repoContent);
+          const hasDiff = diffResult.some(d => d.type === 'added' || d.type === 'removed');
+          
+          let linesHtml = '';
+          diffResult.forEach(line => {
+            const escapeHtml = (str) => str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            linesHtml += `<div class="diff-line ${line.type}">${escapeHtml(line.text)}</div>`;
+          });
+          
+          diffArea.innerHTML = `
+            <div class="diff-container">
+              <div class="diff-header">
+                <span>📄 差异对比 (${hasDiff ? '⚠️ 检测到更新变化' : '✅ 本地与仓库内容一致'})</span>
+                <span style="opacity:0.6;font-size:10px;">staged vs repo</span>
+              </div>
+              <div class="diff-lines-wrapper">
+                ${linesHtml || '<div style="padding:12px;color:var(--text-muted);text-align:center;">无可对比内容</div>'}
+              </div>
+            </div>
+          `;
+        } catch (error) {
+          diffArea.innerHTML = `<div style="padding:12px;color:var(--danger);font-size:12px;">对比差异异常: ${error}</div>`;
+        }
+      });
+    });
+
+    dom.skillsGrid.appendChild(item);
   });
 }
 
@@ -768,6 +904,73 @@ dom.btnCloudRestoreVersioned.addEventListener('click', async () => {
       dom.btnFetchBackups.disabled = false;
       dom.btnCloudRestoreVersioned.textContent = '确认定向还原选中版本';
     }
+  }
+});
+
+// ==========================================
+// 8. Global Keyboard Shortcuts & Helpers
+// ==========================================
+
+function computeLineDiff(oldText, newText) {
+  const oldLines = oldText.split('\n');
+  const newLines = newText.split('\n');
+  
+  const dp = Array(oldLines.length + 1).fill(null).map(() => Array(newLines.length + 1).fill(0));
+  for (let i = 1; i <= oldLines.length; i++) {
+    for (let j = 1; j <= newLines.length; j++) {
+      if (oldLines[i - 1] === newLines[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
+  
+  let i = oldLines.length;
+  let j = newLines.length;
+  const diff = [];
+  
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+      diff.unshift({ type: 'normal', text: oldLines[i - 1] });
+      i--;
+      j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      diff.unshift({ type: 'added', text: newLines[j - 1] });
+      j--;
+    } else if (i > 0 && (j === 0 || dp[i][j - 1] < dp[i - 1][j])) {
+      diff.unshift({ type: 'removed', text: oldLines[i - 1] });
+      i--;
+    }
+  }
+  return diff;
+}
+
+document.addEventListener('keydown', (e) => {
+  const activeEl = document.activeElement;
+  const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.isContentEditable);
+  
+  // 1. Ctrl + F or '/' to focus and select search input
+  if ((e.ctrlKey && e.key.toLowerCase() === 'f') || (e.key === '/' && !isTyping)) {
+    e.preventDefault();
+    dom.searchInput.focus();
+    dom.searchInput.select();
+  }
+  
+  // 2. Escape key handling
+  if (e.key === 'Escape') {
+    if (activeEl === dom.searchInput) {
+      dom.searchInput.blur();
+    }
+    
+    // Close modals
+    dom.modalAddRepo.classList.remove('active');
+    dom.modalSettings.classList.remove('active');
+    
+    // Collapse all accordion drawers
+    document.querySelectorAll('.skill-bar-item.expanded').forEach(item => {
+      item.classList.remove('expanded');
+    });
   }
 });
 

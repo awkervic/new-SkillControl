@@ -13,6 +13,22 @@ use reqwest::header;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
+// Global memory cache for discovered skills
+static SKILLS_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<Vec<SkillMetadata>>>> = std::sync::OnceLock::new();
+
+fn get_skills_cache() -> &'static std::sync::Mutex<Option<Vec<SkillMetadata>>> {
+    SKILLS_CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn invalidate_skills_cache() {
+    if let Some(cache) = SKILLS_CACHE.get() {
+        if let Ok(mut lock) = cache.lock() {
+            *lock = None;
+            println!("DEBUG: [invalidate_skills_cache] Cache invalidated.");
+        }
+    }
+}
+
 // ==========================================
 // 1. Data Structures & Configurations
 // ==========================================
@@ -40,6 +56,8 @@ pub struct SkillStatus {
     #[serde(default = "default_scope")]
     pub scope: String,
     pub enable_agy: bool,
+    #[serde(default)]
+    pub enable_agy2: bool,
     pub enable_reasonix: bool,
     pub auto_update: bool,
 }
@@ -437,9 +455,12 @@ async fn add_repository(name: String, url: String) -> Result<AppConfig, String> 
     let clone_url = config.repositories.last().unwrap().url.clone();
     let dest_path = get_repos_cache_path().join(&repo_id);
     tokio::spawn(async move {
-        let _ = git_clone_internal(&clone_url, &dest_path).await;
+        if git_clone_internal(&clone_url, &dest_path).await.is_ok() {
+            invalidate_skills_cache();
+        }
     });
 
+    invalidate_skills_cache();
     Ok(config)
 }
 
@@ -471,20 +492,23 @@ async fn delete_repository(repo_id: String) -> Result<AppConfig, String> {
         let _ = tokio::fs::remove_dir_all(repo_path).await;
     }
 
+    invalidate_skills_cache();
     Ok(config)
 }
 
 #[tauri::command]
 async fn sync_all_repositories() -> Result<(), String> {
     let config = get_config_internal().await?;
-    for repo in config.repositories {
+    for repo in &config.repositories {
         let repo_path = get_repos_cache_path().join(&repo.id);
         if repo_path.exists() {
             let _ = git_pull_internal(&repo_path).await;
         } else {
             let _ = git_clone_internal(&repo.url, &repo_path).await;
         }
+        let _ = auto_update_and_cleanup_repo(&repo.id).await;
     }
+    invalidate_skills_cache();
     Ok(())
 }
 
@@ -494,11 +518,74 @@ async fn sync_single_repository(repo_id: String) -> Result<(), String> {
     if let Some(repo) = config.repositories.iter().find(|r| r.id == repo_id) {
         let repo_path = get_repos_cache_path().join(&repo.id);
         if repo_path.exists() {
-            git_pull_internal(&repo_path).await?;
+            let _ = git_pull_internal(&repo_path).await;
         } else {
-            git_clone_internal(&repo.url, &repo_path).await?;
+            let _ = git_clone_internal(&repo.url, &repo_path).await;
+        }
+        let _ = auto_update_and_cleanup_repo(&repo_id).await;
+    }
+    invalidate_skills_cache();
+    Ok(())
+}
+
+async fn auto_update_and_cleanup_repo(repo_id: &str) -> Result<(), String> {
+    let mut config = get_config_internal().await?;
+    let repo_path = get_repos_cache_path().join(repo_id);
+    if !repo_path.exists() {
+        return Ok(());
+    }
+
+    let repo_id_str = repo_id.to_string();
+    let repo_path_clone = repo_path.clone();
+    let discovered = tokio::task::spawn_blocking(move || {
+        let mut skills = Vec::new();
+        scan_directory_for_skills(&repo_path_clone, &repo_id_str, &mut skills);
+        skills
+    }).await.map_err(|e| e.to_string())?;
+
+    let discovered_ids: std::collections::HashSet<String> = discovered.iter().map(|s| s.id.clone()).collect();
+
+    // 1. Auto update existing installed skills in staging/distribution if they have auto_update enabled
+    for skill in &discovered {
+        let is_installed = get_staging_path().join(format!("{}.md", skill.id)).exists() ||
+                           get_my_brain_path().join(format!("{}.md", skill.id)).exists();
+        if is_installed {
+            let auto_update = config.skills_status.get(&skill.id)
+                .map(|status| status.auto_update)
+                .unwrap_or(true);
+            
+            if auto_update {
+                println!("DEBUG: [auto_update] Syncing skill {}...", skill.id);
+                let source_path = repo_path.join(&skill.relative_path);
+                let dest_path = get_staging_path().join(format!("{}.md", skill.id));
+                if source_path.exists() {
+                    let _ = tokio::fs::copy(&source_path, &dest_path).await;
+                    // Re-distribute physical files
+                    if config.skills_status.contains_key(&skill.id) {
+                        let _ = sync_physical_distributions_for_skill(&skill.id, &config).await;
+                    }
+                }
+            }
         }
     }
+
+    // 2. Remove skills that are in status but no longer present in this repo (deleted/renamed)
+    let mut skills_to_remove = Vec::new();
+    for (skill_id, status) in &config.skills_status {
+        if status.repo_id == repo_id && !discovered_ids.contains(skill_id) {
+            skills_to_remove.push(skill_id.clone());
+        }
+    }
+
+    if !skills_to_remove.is_empty() {
+        println!("DEBUG: [cleanup] Removing orphaned skills: {:?}", skills_to_remove);
+        for skill_id in &skills_to_remove {
+            let _ = remove_physical_distribution(skill_id).await;
+            config.skills_status.remove(skill_id);
+        }
+        save_config(config).await?;
+    }
+
     Ok(())
 }
 
@@ -553,37 +640,25 @@ async fn git_pull_internal(repo_path: &Path) -> Result<(), String> {
 
 #[tauri::command]
 async fn discover_skills(repo_id: String) -> Result<Vec<SkillMetadata>, String> {
-    let config = get_config_internal().await?;
-    let repo = config.repositories.iter().find(|r| r.id == repo_id)
-        .ok_or_else(|| "Repository not found".to_string())?;
-
-    let repo_path = get_repos_cache_path().join(&repo_id);
-    if !repo_path.exists() {
-        // Automatically clone in background if cached folder does not exist yet to prevent UI freeze
-        let clone_url = repo.url.clone();
-        let dest_path = repo_path.clone();
-        tokio::spawn(async move {
-            let _ = git_clone_internal(&clone_url, &dest_path).await;
-        });
-        return Ok(Vec::new());
-    }
-
-    let repo_path_clone = repo_path.clone();
-    let repo_id_clone = repo_id.clone();
-    let skills = tokio::task::spawn_blocking(move || {
-        let mut skills = Vec::new();
-        if repo_path_clone.exists() {
-            scan_directory_for_skills(&repo_path_clone, &repo_id_clone, &mut skills);
-        }
-        skills
-    }).await.map_err(|e| e.to_string())?;
-
-    Ok(skills)
+    let all_skills = discover_all_skills().await?;
+    let filtered = all_skills.into_iter().filter(|s| s.repo_id == repo_id).collect();
+    Ok(filtered)
 }
 
 #[tauri::command]
 async fn discover_all_skills() -> Result<Vec<SkillMetadata>, String> {
     println!("DEBUG: [discover_all_skills] START");
+    
+    // Check memory cache first
+    {
+        if let Ok(cache) = get_skills_cache().lock() {
+            if let Some(ref cached_skills) = *cache {
+                println!("DEBUG: [discover_all_skills] Return from cache ({} skills)", cached_skills.len());
+                return Ok(cached_skills.clone());
+            }
+        }
+    }
+
     let config = get_config_internal().await?;
     let mut repos_to_scan = Vec::new();
     for repo in &config.repositories {
@@ -594,7 +669,9 @@ async fn discover_all_skills() -> Result<Vec<SkillMetadata>, String> {
             let dest_path = repo_path.clone();
             println!("DEBUG: [discover_all_skills] spawning bg clone for {}", repo.name);
             tokio::spawn(async move {
-                let _ = git_clone_internal(&clone_url, &dest_path).await;
+                if git_clone_internal(&clone_url, &dest_path).await.is_ok() {
+                    invalidate_skills_cache();
+                }
             });
         } else {
             repos_to_scan.push((repo_path, repo.id.clone()));
@@ -609,6 +686,13 @@ async fn discover_all_skills() -> Result<Vec<SkillMetadata>, String> {
         }
         skills
     }).await.map_err(|e| e.to_string())?;
+
+    // Update memory cache
+    {
+        if let Ok(mut cache) = get_skills_cache().lock() {
+            *cache = Some(all_skills.clone());
+        }
+    }
     
     println!("DEBUG: [discover_all_skills] complete, {} skills found", all_skills.len());
     Ok(all_skills)
@@ -729,7 +813,7 @@ pub struct AgySkillEntry {
 /// Synchronise AGY's global `config.json` with our skill state.
 /// On enable: appends the skill to `installed_skills` (if absent).
 /// On disable: removes the skill from `installed_skills`.
-fn sync_agy_config_json(skill_id: &str, skill_name: &str, enable: bool, scope: &str) -> Result<(), String> {
+fn sync_agy_config_json(skill_id: &str, skill_name: &str, enable_agy: bool, enable_agy2: bool, scope: &str) -> Result<(), String> {
     let username = home::home_dir()
         .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
         .ok_or_else(|| "Could not determine user home directory".to_string())?;
@@ -747,12 +831,19 @@ fn sync_agy_config_json(skill_id: &str, skill_name: &str, enable: bool, scope: &
         AgyConfig::default()
     };
 
+    let enable = enable_agy || enable_agy2;
+
     let skill_path = if scope == "project" || scope == "workspace" {
         get_project_root().join(format!(".agents\\skills\\{}\\SKILL.md", skill_id))
             .to_string_lossy().to_string()
     } else if scope == "shared" {
         format!(
             "C:\\Users\\{}\\.gemini\\skills\\{}\\SKILL.md",
+            username, skill_id
+        )
+    } else if enable_agy2 {
+        format!(
+            "C:\\Users\\{}\\.gemini\\antigravity\\skills\\{}\\SKILL.md",
             username, skill_id
         )
     } else {
@@ -763,24 +854,22 @@ fn sync_agy_config_json(skill_id: &str, skill_name: &str, enable: bool, scope: &
     };
 
     if enable {
-        // Append only if not already present
-        if !agy_cfg.installed_skills.iter().any(|s| s.id == skill_id) {
-            agy_cfg.installed_skills.push(AgySkillEntry {
-                id: skill_id.to_string(),
-                name: skill_name.to_string(),
-                path: skill_path.clone(),
-                enabled: true,
-            });
-        }
-        // Also update active_skills
-        if !agy_cfg.active_skills.iter().any(|s| s.id == skill_id) {
-            agy_cfg.active_skills.push(AgySkillEntry {
-                id: skill_id.to_string(),
-                name: skill_name.to_string(),
-                path: skill_path,
-                enabled: true,
-            });
-        }
+        // Remove old entry to update path
+        agy_cfg.installed_skills.retain(|s| s.id != skill_id);
+        agy_cfg.active_skills.retain(|s| s.id != skill_id);
+
+        agy_cfg.installed_skills.push(AgySkillEntry {
+            id: skill_id.to_string(),
+            name: skill_name.to_string(),
+            path: skill_path.clone(),
+            enabled: true,
+        });
+        agy_cfg.active_skills.push(AgySkillEntry {
+            id: skill_id.to_string(),
+            name: skill_name.to_string(),
+            path: skill_path,
+            enabled: true,
+        });
     } else {
         // Remove from both arrays
         agy_cfg.installed_skills.retain(|s| s.id != skill_id);
@@ -814,6 +903,7 @@ async fn install_skill(repo_id: String, relative_path: String, skill_id: String)
 
     let dest_path = get_staging_path().join(format!("{}.md", skill_id));
     tokio::fs::copy(&source_path, &dest_path).await.map_err(|e| format!("Failed to install skill into staging: {}", e))?;
+    invalidate_skills_cache();
     Ok(())
 }
 
@@ -821,7 +911,7 @@ async fn install_skill(repo_id: String, relative_path: String, skill_id: String)
 async fn toggle_skill_switch(
     skill_id: String,
     repo_id: String,
-    switch_type: String, // "agy", "reasonix", "auto_update"
+    switch_type: String, // "agy", "agy2", "reasonix", "auto_update"
     status: bool,
     scope: Option<String>, // "global" | "project", None = keep existing
 ) -> Result<AppConfig, String> {
@@ -832,6 +922,7 @@ async fn toggle_skill_switch(
         repo_id: repo_id.clone(),
         scope: scope.clone().unwrap_or_else(|| "global".to_string()),
         enable_agy: false,
+        enable_agy2: false,
         enable_reasonix: false,
         auto_update: true,
     });
@@ -843,6 +934,7 @@ async fn toggle_skill_switch(
 
     match switch_type.as_str() {
         "agy" => skill_stat.enable_agy = status,
+        "agy2" => skill_stat.enable_agy2 = status,
         "reasonix" => skill_stat.enable_reasonix = status,
         "auto_update" => skill_stat.auto_update = status,
         _ => return Err("Invalid switch type".to_string()),
@@ -853,6 +945,7 @@ async fn toggle_skill_switch(
 
     // Perform physical changes based on toggle action
     sync_physical_distributions_for_skill(&skill_id, &config).await?;
+    invalidate_skills_cache();
 
     Ok(config)
 }
@@ -872,6 +965,7 @@ async fn update_skill_scope(
         repo_id: repo_id.clone(),
         scope: scope.clone(),
         enable_agy: false,
+        enable_agy2: false,
         enable_reasonix: false,
         auto_update: true,
     });
@@ -882,6 +976,7 @@ async fn update_skill_scope(
 
     // Now, re-distribute files under the new scope
     let _ = sync_physical_distributions_for_skill(&skill_id, &config).await;
+    invalidate_skills_cache();
 
     Ok(config)
 }
@@ -908,12 +1003,17 @@ fn resolve_scope_path(skill_id: &str, scope: &str, cli_type: &str) -> Result<Pat
             PathBuf::from(format!("C:\\Users\\{}\\.gemini\\antigravity-cli\\skills", username))
                 .join(skill_id).join("SKILL.md")
         ),
-        // AGY - Project/Workspace:  <project>/.agents/skills/<skill_id>/SKILL.md
-        ("agy", "project") | ("agy", "workspace") => Ok(
+        // AGY 2.0 - Global:  C:\Users\<username>\.gemini\antigravity\skills\<skill_id>\SKILL.md
+        ("agy2", "global") => Ok(
+            PathBuf::from(format!("C:\\Users\\{}\\.gemini\\antigravity\\skills", username))
+                .join(skill_id).join("SKILL.md")
+        ),
+        // AGY / AGY 2.0 - Project/Workspace:  <project>/.agents/skills/<skill_id>/SKILL.md
+        ("agy", "project") | ("agy", "workspace") | ("agy2", "project") | ("agy2", "workspace") => Ok(
             project_root.join(".agents\\skills").join(skill_id).join("SKILL.md")
         ),
-        // AGY - Shared:  C:\Users\<username>\.gemini\skills\<skill_id>\SKILL.md
-        ("agy", "shared") => Ok(
+        // AGY / AGY 2.0 - Shared:  C:\Users\<username>\.gemini\skills\<skill_id>\SKILL.md
+        ("agy", "shared") | ("agy2", "shared") => Ok(
             PathBuf::from(format!("C:\\Users\\{}\\.gemini\\skills", username))
                 .join(skill_id).join("SKILL.md")
         ),
@@ -954,6 +1054,25 @@ async fn sync_physical_distributions_for_skill(skill_id: &str, config: &AppConfi
     }
 
     // ==================================================================
+    // AGY 2.0 — copy raw markdown into <scope>/<skill_id>/SKILL.md folder
+    // ==================================================================
+    let agy2_path = resolve_scope_path(skill_id, scope, "agy2")?;
+    if skill_status.enable_agy2 {
+        let agy2_dir = agy2_path.parent()
+            .ok_or_else(|| "Invalid AGY2 path".to_string())?;
+        tokio::fs::create_dir_all(agy2_dir).await.map_err(|e| e.to_string())?;
+        tokio::fs::write(&agy2_path, &staging_content).await.map_err(|e| format!(
+            "Failed to write AGY2 file {}: {}", agy2_path.display(), e
+        ))?;
+    } else {
+        if let Some(parent) = agy2_path.parent() {
+            if parent.exists() {
+                let _ = tokio::fs::remove_dir_all(parent).await;
+            }
+        }
+    }
+
+    // ==================================================================
     // Reasonix — inject standardised frontmatter then write .md file
     // ==================================================================
     let reasonix_path = resolve_scope_path(skill_id, scope, "reasonix")?;
@@ -977,11 +1096,12 @@ async fn sync_physical_distributions_for_skill(skill_id: &str, config: &AppConfi
     let skill_id_clone = skill_id.to_string();
     let skill_name_clone = skill_id.to_string();
     let enable_agy = skill_status.enable_agy;
+    let enable_agy2 = skill_status.enable_agy2;
     let scope_clone = scope.clone();
     // Fire-and-forget: NEVER await blocking tasks on the async runtime
     tokio::spawn(async move {
         let _ = tokio::task::spawn_blocking(move || {
-            let _ = sync_agy_config_json(&skill_id_clone, &skill_name_clone, enable_agy, &scope_clone);
+            let _ = sync_agy_config_json(&skill_id_clone, &skill_name_clone, enable_agy, enable_agy2, &scope_clone);
         }).await;
     });
 
@@ -1093,9 +1213,9 @@ async fn remove_physical_distribution(skill_id: &str) -> Result<(), String> {
     // Fire-and-forget: NEVER await blocking tasks on the async runtime
     tokio::spawn(async move {
         let _ = tokio::task::spawn_blocking(move || {
-            let _ = sync_agy_config_json(&skill_id_clone1, &skill_id_clone1, false, "global");
-            let _ = sync_agy_config_json(&skill_id_clone2, &skill_id_clone2, false, "project");
-            let _ = sync_agy_config_json(&skill_id_clone3, &skill_id_clone3, false, "shared");
+            let _ = sync_agy_config_json(&skill_id_clone1, &skill_id_clone1, false, false, "global");
+            let _ = sync_agy_config_json(&skill_id_clone2, &skill_id_clone2, false, false, "project");
+            let _ = sync_agy_config_json(&skill_id_clone3, &skill_id_clone3, false, false, "shared");
         }).await;
     });
 
@@ -1107,11 +1227,20 @@ async fn remove_physical_distribution(skill_id: &str) -> Result<(), String> {
 async fn startup_sync_distributions() -> Result<(), String> {
     println!("DEBUG: [startup_sync_distributions] START");
     let config = get_config_internal().await?;
+    
+    // First, sync/cleanup each repository based on local cached files
+    for repo in &config.repositories {
+        let _ = auto_update_and_cleanup_repo(&repo.id).await;
+    }
+    
+    // Now re-read config
+    let config = get_config_internal().await?;
+    
     println!("DEBUG: [startup_sync_distributions] {} skills in status", config.skills_status.len());
     let mut errors: Vec<String> = Vec::new();
 
     for (skill_id, status) in &config.skills_status {
-        if status.enable_agy || status.enable_reasonix {
+        if status.enable_agy || status.enable_agy2 || status.enable_reasonix {
             let staging_file = get_staging_path().join(format!("{}.md", skill_id));
             println!("DEBUG: [startup_sync_distributions] skill={} staging_exists={}", skill_id, staging_file.exists());
             if staging_file.exists() {
@@ -1123,6 +1252,8 @@ async fn startup_sync_distributions() -> Result<(), String> {
             }
         }
     }
+
+    invalidate_skills_cache();
 
     if errors.is_empty() {
         Ok(())
@@ -1154,6 +1285,7 @@ async fn sync_skill_now(skill_id: String, repo_id: String, relative_path: String
         sync_physical_distributions_for_skill(&skill_id, &config).await?;
     }
 
+    invalidate_skills_cache();
     Ok(())
 }
 
@@ -1359,6 +1491,7 @@ async fn trigger_resurrect() -> Result<AppConfig, String> {
         }
     }
 
+    invalidate_skills_cache();
     Ok(recovered_config)
 }
 
@@ -1617,6 +1750,7 @@ async fn trigger_restore_version(filename: String) -> Result<AppConfig, String> 
         }
     }
 
+    invalidate_skills_cache();
     Ok(recovered_config)
 }
 
@@ -1674,7 +1808,31 @@ async fn uninstall_skill(skill_id: String) -> Result<AppConfig, String> {
     config.skills_status.remove(&skill_id);
     save_config(config.clone()).await?;
 
+    invalidate_skills_cache();
     Ok(config)
+}
+
+#[tauri::command]
+async fn get_skill_diff(skill_id: String, repo_id: String, relative_path: String) -> Result<HashMap<String, String>, String> {
+    let staged_path = get_staging_path().join(format!("{}.md", skill_id));
+    let repo_path = get_repos_cache_path().join(&repo_id).join(&relative_path);
+
+    let staged_content = if staged_path.exists() {
+        tokio::fs::read_to_string(&staged_path).await.unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let repo_content = if repo_path.exists() {
+        tokio::fs::read_to_string(&repo_path).await.unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let mut result = HashMap::new();
+    result.insert("staged".to_string(), staged_content);
+    result.insert("repo".to_string(), repo_content);
+    Ok(result)
 }
 
 // ==========================================
@@ -1732,7 +1890,8 @@ pub fn run() {
             trigger_resurrect,
             get_backup_list,
             trigger_restore_version,
-            uninstall_skill
+            uninstall_skill,
+            get_skill_diff
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
