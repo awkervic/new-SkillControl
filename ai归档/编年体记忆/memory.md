@@ -32,3 +32,11 @@
 
 - **[2026-05-28] 修复**：完美解决本地 115-WebDAV (基于 WsgiDAV) 在拉取还原备份时返回的 `302 Found` 目标局域网物理 IP (如 `10.206.163.107:11500`) 无法访问导致的 120s 连接超时失败。对 `send_webdav_request` 引入精细化 "双阶段智能重定向纠错 (Smart Redirect Correction)"：利用 `std::net::IpAddr` 地址解析器，仅对局域网私有 IP (Private/Local IPv4) 强行修改回 `127.0.0.1` 环回 Host 并保留目标端口，完美放行后续第二阶段重定向到 115 官方高速 CDN 域名 (`cdnfhnfile.115cdn.net`) 的直链，顺利打通整条下载链路。通过 `cargo tauri build` 42.82 秒内成功重新编译并打包 NSIS 程序。[lib.rs:258](src-tauri/src/lib.rs)
 - **[2026-05-28] 发布**：利用 C# P/Invoke 与 Win32 APIs (`CredReadW`) 编写了自动化凭据提权脚本，无需环境变量支持即可静默导出 Windows 凭据管理器中保存的 GitHub Token；随后调用 GitHub REST API 全自动重建 `v0.1.3` Releases，并将本地最新生成的 NSIS 一键安装包（`new-SkillControl_0.1.3_x64-setup.exe`）成功上传为官方 Release 主要资产。同时在终端运行 `chcp 65001` 清洗会话编码为 UTF-8 消除假死隐患，成功完美落盘。[GitHub Releases](https://github.com/awkervic/new-SkillControl/releases/tag/v0.1.3)
+
+* [2026-06-06] 特性：新增拉取仓库时自动物理清理 Staging/App 配置中已被删除或重命名的孤儿技能功能 (src-tauri/src/lib.rs)
+* [2026-06-06] 特性：前端与后端新增 AGY 2.0 物理部署切换开关以及状态激活角标支持 (src-tauri/src/lib.rs, ui/)
+* [2026-06-06] 界面：重构主界面布局，从卡片网格过渡到精美的手风琴列表行，折叠抽屉展示详情及源码 (ui/)
+* [2026-06-06] 特性：引入 OnceLock 内存缓存 SKILLS_CACHE，实现 0ms 闪电级过滤与搜索体验 (src-tauri/src/lib.rs, ui/)
+* [2026-06-06] 特性：在手风琴折叠页中集成行级最长公共子序列（LCS）代码差异对比器 (src-tauri/src/lib.rs, ui/)
+* [2026-06-06] 交互：支持全局 Ctrl+F 或 / 键快速聚焦搜索框，Esc 键快速模糊/关闭弹窗或收起手风琴行 (ui/)
+* [2026-06-06] 发布：提取 Git GCM 凭据，通过 Python 实现无 gh 环境下的 GitHub API 自动发布并直接上传 0.1.4 正式版安装包 (scratch/upload_release.py)
