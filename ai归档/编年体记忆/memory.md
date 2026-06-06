@@ -45,3 +45,5 @@
 * [2026-06-06] 界面：前端技能列表卡片标题处渲染来源仓库 badge 以区分同名技能 (ui/index.js, ui/index.css)
 * [2026-06-06] 交互：前端技能头部状态指示器绑定快速 toggle 切换分发开关并阻止手风琴事件冒泡 (ui/index.js, ui/index.css)
 * [2026-06-06] 发布：版本号更新至 v0.1.5，重新编译打包，提取 Git GCM 凭据，通过 Python 向 GitHub Releases v0.1.5 自动发布并直接上传了安装包。(https://github.com/awkervic/new-SkillControl/releases/tag/v0.1.5)
+* [2026-06-06] 修复：修复在主界面点击状态标签触发开关操作时由于 async-await 后 event 对象被回收导致 classList 读取失败的 TypeError Bug。(https://github.com/awkervic/new-SkillControl/releases/tag/v0.1.6)
+* [2026-06-06] 发布：版本号更新至 v0.1.6，重新编译打包，提取 Git GCM 凭据，通过 Python 向 GitHub Releases v0.1.6 自动发布并直接上传了安装包。(https://github.com/awkervic/new-SkillControl/releases/tag/v0.1.6)

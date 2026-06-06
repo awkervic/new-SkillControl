@@ -159,3 +159,10 @@
 **核心变动描述：**
 1. **版本迭代 v0.1.5**：将 `Cargo.toml` 和 `tauri.conf.json` 中的版本号从 `0.1.4` 递增（迭代 0.0.1）至 `0.1.5`。
 2. **打包与 GitHub API 云端发布**：运行 `cargo tauri build` 编译生产包，并使用基于 Python 的凭据自动化管理与 API 调用脚本，成功创建 `v0.1.5` 官方 Release 页面并成功将打包好的 Windows 安装包 (new-SkillControl_0.1.5_x64-setup.exe) 上传作为主要分发资产。
+
+
+### [2026-06-06 15:40] (北京时间)
+
+**核心变动描述：**
+1. **修复点击状态指示器时的 TypeError 崩溃**：修复了在技能标题行点击指示灯（AGY CLI / AGY 2.0 / Reasonix）触发异步开关切换时，由于 `await` 之后事件对象被浏览器垃圾回收，访问 `e.currentTarget.classList` 抛出 `TypeError: Cannot read properties of null` 的问题。改用 Local Scope 捕获的 `ind` (即 `forEach` 循环中的元素引用) 代替 `e.currentTarget`。
+2. **发布 v0.1.6 Hotfix**：版本号升级至 `0.1.6`，编译打包并创建 GitHub Releases v0.1.6 成功上传 Windows NSIS 安装包资产。
