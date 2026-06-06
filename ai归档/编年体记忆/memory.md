@@ -40,3 +40,7 @@
 * [2026-06-06] 特性：在手风琴折叠页中集成行级最长公共子序列（LCS）代码差异对比器 (src-tauri/src/lib.rs, ui/)
 * [2026-06-06] 交互：支持全局 Ctrl+F 或 / 键快速聚焦搜索框，Esc 键快速模糊/关闭弹窗或收起手风琴行 (ui/)
 * [2026-06-06] 发布：提取 Git GCM 凭据，通过 Python 实现无 gh 环境下的 GitHub API 自动发布并直接上传 0.1.4 正式版安装包 (scratch/upload_release.py)
+
+* [2026-06-06] 特性：后端 parse_markdown_skill 传入 skills_status 并校验 repo_id 隔离多仓库同名 ID 技能的下载/安装状态判断 (src-tauri/src/lib.rs)
+* [2026-06-06] 界面：前端技能列表卡片标题处渲染来源仓库 badge 以区分同名技能 (ui/index.js, ui/index.css)
+* [2026-06-06] 交互：前端技能头部状态指示器绑定快速 toggle 切换分发开关并阻止手风琴事件冒泡 (ui/index.js, ui/index.css)

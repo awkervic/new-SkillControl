@@ -474,6 +474,16 @@ body {
   background: rgba(0, 0, 0, 0.03);
 }
 
+.badge-repo {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--primary);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+}
+
+[data-theme="light"] .badge-repo {
+  background: rgba(79, 70, 229, 0.06);
+}
+
 .skill-bar-right {
   display: flex;
   align-items: center;
@@ -486,17 +496,33 @@ body {
 }
 
 .active-indicator {
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 4px;
+  font-size: 10.5px;
+  padding: 3px 8px;
+  border-radius: 6px;
   font-weight: 600;
   border: 1px solid transparent;
   opacity: 0.25;
   transition: var(--transition-smooth);
+  user-select: none;
+  cursor: default;
+}
+
+.active-indicator.installed {
+  cursor: pointer;
+}
+
+.active-indicator.installed:hover {
+  opacity: 0.6;
+  border-color: currentColor;
 }
 
 .active-indicator.active {
   opacity: 1;
+}
+
+.active-indicator.installed.active:hover {
+  opacity: 0.8;
+  box-shadow: 0 0 8px currentColor;
 }
 
 .indicator-agy {

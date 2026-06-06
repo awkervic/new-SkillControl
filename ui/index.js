@@ -343,15 +343,24 @@ function renderSkillsGrid() {
             <polyline points="9 18 15 12 9 6"></polyline>
           </svg>
           <span class="skill-bar-title">${skill.name}</span>
+          <span class="badge badge-repo" title="来源仓库: ${repoName}">
+            📦 ${repoName}
+          </span>
           <span class="badge ${skill.is_installed ? 'badge-installed' : 'badge-not-installed'}">
             ${skill.is_installed ? '已下载' : '未下载'}
           </span>
         </div>
         <div class="skill-bar-right">
           <div class="active-indicator-group">
-            <span class="active-indicator indicator-agy ${status.enable_agy ? 'active' : ''}">AGY 1.0</span>
-            <span class="active-indicator indicator-agy2 ${status.enable_agy2 ? 'active' : ''}">AGY 2.0</span>
-            <span class="active-indicator indicator-reasonix ${status.enable_reasonix ? 'active' : ''}">Reasonix</span>
+            <span class="active-indicator indicator-agy ${skill.is_installed ? 'installed' : ''} ${status.enable_agy ? 'active' : ''}" 
+                  data-skill="${skill.id}" data-repo="${skill.repo_id}" data-type="agy"
+                  title="${skill.is_installed ? '点击快速切换 AGY CLI' : '请先下载安装此技能'}">AGY CLI</span>
+            <span class="active-indicator indicator-agy2 ${skill.is_installed ? 'installed' : ''} ${status.enable_agy2 ? 'active' : ''}" 
+                  data-skill="${skill.id}" data-repo="${skill.repo_id}" data-type="agy2"
+                  title="${skill.is_installed ? '点击快速切换 AGY 2.0' : '请先下载安装此技能'}">AGY 2.0</span>
+            <span class="active-indicator indicator-reasonix ${skill.is_installed ? 'installed' : ''} ${status.enable_reasonix ? 'active' : ''}" 
+                  data-skill="${skill.id}" data-repo="${skill.repo_id}" data-type="reasonix"
+                  title="${skill.is_installed ? '点击快速切换 Reasonix' : '请先下载安装此技能'}">Reasonix</span>
           </div>
         </div>
       </div>
@@ -377,7 +386,7 @@ function renderSkillsGrid() {
           <div class="skill-switches-horizontal">
             <div class="control-switch-row">
               <div class="switch-label-group">
-                <span class="switch-label-name label-agy">⚡ AGY 1.0 技能分发</span>
+                <span class="switch-label-name label-agy">⚡ AGY CLI 技能分发</span>
                 <span class="switch-label-desc">在 .gemini\antigravity-cli 分发 SKILL.md</span>
               </div>
               <label class="switch-container">
@@ -463,7 +472,7 @@ function renderSkillsGrid() {
 
     // Click on header to toggle accordion expand/collapse
     item.querySelector('.skill-bar-header').addEventListener('click', (e) => {
-      if (e.target.closest('.toggle-switch') || e.target.closest('button') || e.target.closest('a')) {
+      if (e.target.closest('.active-indicator.installed') || e.target.closest('.toggle-switch') || e.target.closest('button') || e.target.closest('a')) {
         return;
       }
       
@@ -481,6 +490,55 @@ function renderSkillsGrid() {
       } else {
         item.classList.add('expanded');
       }
+    });
+
+    // Listen to clicks on active indicators (header tags)
+    item.querySelectorAll('.active-indicator.installed').forEach(ind => {
+      ind.addEventListener('click', async (e) => {
+        // Prevent click from expanding/collapsing the accordion
+        e.stopPropagation();
+        
+        const skillId = e.currentTarget.dataset.skill;
+        const repoId = e.currentTarget.dataset.repo;
+        const type = e.currentTarget.dataset.type;
+        const isActive = e.currentTarget.classList.contains('active');
+        const nextStatus = !isActive;
+        
+        try {
+          const scope = (state.config.skills_status[skillId] || {}).scope || 'global';
+          state.config = await invoke('toggle_skill_switch', {
+            skillId,
+            repoId,
+            switchType: type,
+            status: nextStatus,
+            scope: scope
+          });
+          renderStats();
+          
+          // Toggle visual state on the clicked indicator
+          if (nextStatus) {
+            e.currentTarget.classList.add('active');
+          } else {
+            e.currentTarget.classList.remove('active');
+          }
+          
+          // Also sync the checkbox toggle state inside the drawer if it exists
+          const checkbox = item.querySelector(`.toggle-switch[data-type="${type}"]`);
+          if (checkbox) {
+            checkbox.checked = nextStatus;
+          }
+          
+          showToast(`技能 [${skillId}] 已${nextStatus ? '点亮启动' : '注销关闭'} [${type.toUpperCase()}]`);
+          
+          if (type === 'reasonix' || type === 'agy' || type === 'agy2') {
+            invoke('notify_reasonix_reload').catch(err => {
+              console.warn('[SkillControl] Reasonix reload note (non-blocking):', err);
+            });
+          }
+        } catch (error) {
+          showToast(`开关操作失败: ${error}`, 'danger');
+        }
+      });
     });
 
     // Listen to changes on switches

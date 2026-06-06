@@ -1,3 +1,4 @@
 # new-SkillControl LOGIC_BASE — 核心方案与避坑指南
 
 [2026-06-06] | 实现 v0.1.4 需求（包含清除孤儿技能、AGY 2.0开关、手风琴列表UI、LCS差异比对器、极速搜索缓存和全局快捷键）并直接自动发布 Release | 1. 采用 OnceLock 静态内存缓存 `SKILLS_CACHE` 降低二次加载延迟至 0ms。2. 编写 Rust 手动计算 LCS 并高亮行级差异。3. 使用 Python 子进程交互调用 `git credential fill` 提取 GCM 托管 of GitHub Token，稳定绕过本地无 `gh` 客户端及双因子认证。 | 1. 结构体 `SkillStatus` 新增字段必须加 `#[serde(default)]`，否则前端解析老配置时会导致反序列化报错崩溃。 2. Windows 命令行交互获取凭据极易受换行符和编码干扰，使用 Python 原生 `subprocess` 以标准输入形式与 `git credential` 交互是最稳妥的方法。
+[2026-06-06] | 技能管理重复项区分与头部快捷开关状态切换 | 1. 后端在 `parse_markdown_skill` 中传入 `skills_status` 映射，结合 `repo_id` 的一致性（以及内容对比兜底）判定 `is_installed`，从而在多仓库中隔离同名 ID 技能的下载状态。2. 前端技能卡片标题处渲染来源仓库 badge，并在头部状态指示灯绑定 click 事件直接触发切换分发开关并自动 sync drawer 里的 checkbox，阻止事件冒泡。 | 1. 区分不同仓库中同名 ID 技能的关键在于校验配置中的 `repo_id` 是否匹配。2. 头部快捷开关必须限制在 `is_installed` 为 true 时才允许交互，且需要使用 `e.stopPropagation()` 阻止触发手风琴面板的折叠/展开。

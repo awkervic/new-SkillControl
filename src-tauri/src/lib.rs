@@ -537,9 +537,10 @@ async fn auto_update_and_cleanup_repo(repo_id: &str) -> Result<(), String> {
 
     let repo_id_str = repo_id.to_string();
     let repo_path_clone = repo_path.clone();
+    let skills_status_map = config.skills_status.clone();
     let discovered = tokio::task::spawn_blocking(move || {
         let mut skills = Vec::new();
-        scan_directory_for_skills(&repo_path_clone, &repo_id_str, &mut skills);
+        scan_directory_for_skills(&repo_path_clone, &repo_id_str, &mut skills, &skills_status_map);
         skills
     }).await.map_err(|e| e.to_string())?;
 
@@ -547,9 +548,7 @@ async fn auto_update_and_cleanup_repo(repo_id: &str) -> Result<(), String> {
 
     // 1. Auto update existing installed skills in staging/distribution if they have auto_update enabled
     for skill in &discovered {
-        let is_installed = get_staging_path().join(format!("{}.md", skill.id)).exists() ||
-                           get_my_brain_path().join(format!("{}.md", skill.id)).exists();
-        if is_installed {
+        if skill.is_installed {
             let auto_update = config.skills_status.get(&skill.id)
                 .map(|status| status.auto_update)
                 .unwrap_or(true);
@@ -679,10 +678,11 @@ async fn discover_all_skills() -> Result<Vec<SkillMetadata>, String> {
     }
 
     println!("DEBUG: [discover_all_skills] scanning {} repos", repos_to_scan.len());
+    let skills_status_map = config.skills_status.clone();
     let all_skills = tokio::task::spawn_blocking(move || {
         let mut skills = Vec::new();
         for (repo_path, repo_id) in repos_to_scan {
-            scan_directory_for_skills(&repo_path, &repo_id, &mut skills);
+            scan_directory_for_skills(&repo_path, &repo_id, &mut skills, &skills_status_map);
         }
         skills
     }).await.map_err(|e| e.to_string())?;
@@ -698,13 +698,18 @@ async fn discover_all_skills() -> Result<Vec<SkillMetadata>, String> {
     Ok(all_skills)
 }
 
-fn scan_directory_for_skills(root: &Path, repo_id: &str, skills: &mut Vec<SkillMetadata>) {
+fn scan_directory_for_skills(
+    root: &Path,
+    repo_id: &str,
+    skills: &mut Vec<SkillMetadata>,
+    skills_status: &HashMap<String, SkillStatus>,
+) {
     let walker = walkdir::WalkDir::new(root).into_iter();
     for entry in walker.filter_map(|e| e.ok()) {
         if entry.file_type().is_file() {
             let path = entry.path();
             if path.extension().map_or(false, |ext| ext == "md") {
-                if let Some(skill) = parse_markdown_skill(path, root, repo_id) {
+                if let Some(skill) = parse_markdown_skill(path, root, repo_id, skills_status) {
                     skills.push(skill);
                 }
             }
@@ -712,7 +717,12 @@ fn scan_directory_for_skills(root: &Path, repo_id: &str, skills: &mut Vec<SkillM
     }
 }
 
-fn parse_markdown_skill(file_path: &Path, root: &Path, repo_id: &str) -> Option<SkillMetadata> {
+fn parse_markdown_skill(
+    file_path: &Path,
+    root: &Path,
+    repo_id: &str,
+    skills_status: &HashMap<String, SkillStatus>,
+) -> Option<SkillMetadata> {
     let mut file = File::open(file_path).ok()?;
     let mut contents = String::new();
     file.read_to_string(&mut contents).ok()?;
@@ -772,8 +782,37 @@ fn parse_markdown_skill(file_path: &Path, root: &Path, repo_id: &str) -> Option<
         .to_string_lossy().into_owned();
 
     // Check if skill is already in staging (check both staging subfolder and my-brain root folder)
-    let is_installed = get_staging_path().join(format!("{}.md", id)).exists() ||
-                       get_my_brain_path().join(format!("{}.md", id)).exists();
+    let is_installed = {
+        let staging_exists = get_staging_path().join(format!("{}.md", id)).exists() ||
+                             get_my_brain_path().join(format!("{}.md", id)).exists();
+        if staging_exists {
+            if let Some(status) = skills_status.get(&id) {
+                status.repo_id == repo_id
+            } else {
+                // Fallback: compare file contents
+                let get_content = |p: &Path| -> Option<String> {
+                    let mut file = File::open(p).ok()?;
+                    let mut c = String::new();
+                    file.read_to_string(&mut c).ok()?;
+                    Some(c)
+                };
+                let staged_content = get_content(&get_staging_path().join(format!("{}.md", id)))
+                    .or_else(|| get_content(&get_my_brain_path().join(format!("{}.md", id))));
+                if let Some(staged_c) = staged_content {
+                    let mut repo_content = String::new();
+                    if let Ok(mut f) = File::open(file_path) {
+                        f.read_to_string(&mut repo_content).is_ok() && staged_c == repo_content
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    };
     let is_downloaded = is_installed;
 
     Some(SkillMetadata {
@@ -903,6 +942,21 @@ async fn install_skill(repo_id: String, relative_path: String, skill_id: String)
 
     let dest_path = get_staging_path().join(format!("{}.md", skill_id));
     tokio::fs::copy(&source_path, &dest_path).await.map_err(|e| format!("Failed to install skill into staging: {}", e))?;
+
+    // Record or update the repository reference in config's skills_status
+    let mut config = get_config_internal().await?;
+    let mut skill_stat = config.skills_status.get(&skill_id).cloned().unwrap_or_else(|| SkillStatus {
+        repo_id: repo_id.clone(),
+        scope: "global".to_string(),
+        enable_agy: false,
+        enable_agy2: false,
+        enable_reasonix: false,
+        auto_update: true,
+    });
+    skill_stat.repo_id = repo_id.clone();
+    config.skills_status.insert(skill_id.clone(), skill_stat);
+    save_config(config).await?;
+
     invalidate_skills_cache();
     Ok(())
 }
@@ -1280,10 +1334,20 @@ async fn sync_skill_now(skill_id: String, repo_id: String, relative_path: String
     tokio::fs::copy(&source_path, &dest_path).await.map_err(|e| format!("Failed to copy updated file: {}", e))?;
 
     // 3. Redistribute files
-    let config = get_config_internal().await?;
-    if config.skills_status.contains_key(&skill_id) {
-        sync_physical_distributions_for_skill(&skill_id, &config).await?;
-    }
+    let mut config = get_config_internal().await?;
+    let mut skill_stat = config.skills_status.get(&skill_id).cloned().unwrap_or_else(|| SkillStatus {
+        repo_id: repo_id.clone(),
+        scope: "global".to_string(),
+        enable_agy: false,
+        enable_agy2: false,
+        enable_reasonix: false,
+        auto_update: true,
+    });
+    skill_stat.repo_id = repo_id.clone();
+    config.skills_status.insert(skill_id.clone(), skill_stat);
+    save_config(config.clone()).await?;
+
+    sync_physical_distributions_for_skill(&skill_id, &config).await?;
 
     invalidate_skills_cache();
     Ok(())
@@ -1472,7 +1536,7 @@ async fn trigger_resurrect() -> Result<AppConfig, String> {
                 let repo_path = get_repos_cache_path().join(&repo.id);
                 if repo_path.exists() {
                     let mut skills_list = Vec::new();
-                    scan_directory_for_skills(&repo_path, &repo.id, &mut skills_list);
+                    scan_directory_for_skills(&repo_path, &repo.id, &mut skills_list, &recovered_config.skills_status);
                     if let Some(matched) = skills_list.iter().find(|s| s.id == *skill_id) {
                         found_path = Some(repo_path.join(&matched.relative_path));
                         _found_repo = Some(repo.id.clone());
@@ -1733,7 +1797,7 @@ async fn trigger_restore_version(filename: String) -> Result<AppConfig, String> 
                 let repo_path = get_repos_cache_path().join(&repo.id);
                 if repo_path.exists() {
                     let mut skills_list = Vec::new();
-                    scan_directory_for_skills(&repo_path, &repo.id, &mut skills_list);
+                    scan_directory_for_skills(&repo_path, &repo.id, &mut skills_list, &recovered_config.skills_status);
                     if let Some(matched) = skills_list.iter().find(|s| s.id == *skill_id) {
                         found_path = Some(repo_path.join(&matched.relative_path));
                         break;
