@@ -498,10 +498,10 @@ function renderSkillsGrid() {
         // Prevent click from expanding/collapsing the accordion
         e.stopPropagation();
         
-        const skillId = e.currentTarget.dataset.skill;
-        const repoId = e.currentTarget.dataset.repo;
-        const type = e.currentTarget.dataset.type;
-        const isActive = e.currentTarget.classList.contains('active');
+        const skillId = ind.dataset.skill;
+        const repoId = ind.dataset.repo;
+        const type = ind.dataset.type;
+        const isActive = ind.classList.contains('active');
         const nextStatus = !isActive;
         
         try {
@@ -517,9 +517,9 @@ function renderSkillsGrid() {
           
           // Toggle visual state on the clicked indicator
           if (nextStatus) {
-            e.currentTarget.classList.add('active');
+            ind.classList.add('active');
           } else {
-            e.currentTarget.classList.remove('active');
+            ind.classList.remove('active');
           }
           
           // Also sync the checkbox toggle state inside the drawer if it exists
